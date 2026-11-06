@@ -57,12 +57,18 @@ export function parseRemote(url) {
 export function sshAlias(url) {
   const s = String(url ?? "").trim();
   if (parseRemote(s)) return null;
-  return /^(?:[^@\s/]+@)?([A-Za-z0-9_.-]+):(?!\/)\S/.exec(s)?.[1] ?? null;
+  // Never a leading "-": ssh would read the alias as an option.
+  return /^(?:[^@\s/]+@)?([A-Za-z0-9_][A-Za-z0-9_.-]*):(?!\/)\S/.exec(s)?.[1] ?? null;
 }
 
 /** The real host from `ssh -G` output, or null. */
 export function sshHostname(out) {
   return /^hostname (\S+)$/m.exec(String(out ?? ""))?.[1] ?? null;
+}
+
+/** `gh pr view` answering that the branch has no PR: a real answer, not a reason to ask again. */
+export function noPr(stderr) {
+  return /no (open )?pull requests? found/i.test(String(stderr ?? ""));
 }
 
 /** The remote with its ssh host alias swapped for the real host. */

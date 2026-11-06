@@ -25,7 +25,7 @@ A Spaces sidebar where each space shows its project's icon and spaces sit in fol
 
 ## Built from
 
-`mod.clone` of the shipped `spaces` mod (0.1.13). `crest.js`: pure logic (remote parsing, icon choice, config, folders, colors, PR and dirty parsing), tested with `node --test`. `ui.js`: tiles, headers, lines. `menu.js`: the right-click menu, drawn by the same mod opened as a popup with `props.crestMenu`. `fetch-avatar.sh`: owner pictures into `crest-cache/`. Herdr functions used: `spaces`, `panes`, `agents`, `exec`, `shared`/`setShared`, `openOverlay`, `run` (`space.select`, `space.move`, `space.rename`, `space.close`, `pane.focus`).
+`mod.clone` of the shipped `spaces` mod (0.1.13). `crest.js`: pure logic (remote parsing, icon choice, config, folders, colors, PR and dirty parsing), tested with `node --test`. `ui.js`: tiles, headers, lines. `menu.js`: the right-click menu, drawn by the same mod opened as a popup with `props.crestMenu`. `fetch-avatar.sh`: owner pictures into `crest-cache/`. Herdr functions used: `spaces`, `panes`, `agents`, `exec`, `shared`/`setShared`, `openOverlay`, `run` (`space.select`, `space.move`, `space.rename`, `space.close`, `pane.focus`). Programs it runs: `git`, `gh pr view` (through `direnv exec` when direnv is installed), `ssh -G` for a remote with an ssh host alias (never an alias starting with `-`), `curl`.
 
 ## Watch out
 

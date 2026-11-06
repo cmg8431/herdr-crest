@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  hashColor, PALETTE, parseRemote, sshAlias, sshHostname, withHost, avatarKey, pickIcon, chooseIcon, initial, normalizeConfig, DEFAULTS,
+  hashColor, PALETTE, parseRemote, sshAlias, sshHostname, withHost, noPr, avatarKey, pickIcon, chooseIcon, initial, normalizeConfig, DEFAULTS,
   memberKey, matches, folderFor, toBlocks, sections, arrange, needsHeaders, toggleFold, assign, renameFolder,
   summarize, topStatus, stackOf, countDirty, parsePr, isTrunk, sortFolders, moveFolder, stepFolder, nest, mainTop,
 } from "../mods/crest/crest.js";
@@ -35,6 +35,14 @@ test("sshAlias finds host aliases parseRemote can't read", () => {
   assert.equal(sshAlias("/srv/git/repo.git"), null);
   assert.equal(sshAlias(""), null);
   assert.equal(sshAlias(undefined), null);
+  assert.equal(sshAlias("git@-Fevil:o/r"), null, "never an alias ssh would take as an option");
+});
+
+test("noPr tells gh's 'no PR here' from a failure worth retrying", () => {
+  assert.equal(noPr('no pull requests found for branch "feat/x"'), true);
+  assert.equal(noPr("direnv: error /x/.envrc is blocked. Run `direnv allow` to approve its content"), false);
+  assert.equal(noPr("GraphQL: Could not resolve to a Repository with the name 'o/r'."), false);
+  assert.equal(noPr(undefined), false);
 });
 
 test("sshHostname reads ssh -G and withHost swaps the alias out", () => {

@@ -439,9 +439,10 @@ export default class Spaces extends View {
     // An ssh host alias (git@github-work:o/r): ask ssh's config which host it is. Reads config only.
     const alias = C.sshAlias(url);
     if (alias) {
-      const r = await exec("ssh", ["-G", alias]).catch(() => null);
+      const r = await exec("ssh", ["-G", "--", alias]).catch(() => null);
       const host = r?.code === 0 ? C.sshHostname(r.stdout) : null;
-      if (host && host !== alias) hit = C.parseRemote(C.withHost(url, alias, host));
+      // ssh lowercases the name: the same name back means no alias.
+      if (host && host !== alias.toLowerCase()) hit = C.parseRemote(C.withHost(url, alias, host));
     }
     if (hit) {
       info.owner = hit.owner;
@@ -500,7 +501,8 @@ export default class Spaces extends View {
       if (this.direnv === undefined) this.direnv = (await exec("/bin/sh", ["-c", "command -v direnv"]).catch(() => null))?.code === 0;
       const view = ["pr", "view", "--json", "number,state,isDraft,url"];
       let r = this.direnv ? await exec("direnv", ["exec", cwd, "gh", ...view], { cwd }).catch(() => null) : null;
-      if (!r || r.code !== 0) r = await exec("gh", view, { cwd }).catch(() => null);
+      // gh's own "no PR for this branch" is an answer: asking again would only double the API calls.
+      if (!r || (r.code !== 0 && !C.noPr(r.stderr))) r = await exec("gh", view, { cwd }).catch(() => null);
       this.prs[key].pr = r && r.code === 0 ? C.parsePr(r.stdout) : null;
       cx.notify();
     }

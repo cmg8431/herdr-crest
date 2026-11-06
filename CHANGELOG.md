@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 - 2026-11-07
+
+- PR numbers, owner pictures and owner folders for remotes that use an ssh host alias (`git@github-work:owner/repo`), resolved with `ssh -G`. Thanks @olddognewflex (#1).
+- `gh pr view` runs through `direnv exec` when direnv is installed, so a repo's `.envrc` can pick the gh account (#1). A branch with no PR is asked once, not twice.
+
 ## 0.3.1 - 2026-11-06
 
 - Worktrees of one repo group together even when the repo itself isn't open: they sit under a dimmed repo row. Click it to open the repo, `+` for another worktree.
