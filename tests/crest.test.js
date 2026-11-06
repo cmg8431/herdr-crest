@@ -227,3 +227,11 @@ test("folderColors never repeats while colors remain, and keeps yours", async ()
   assert.equal(new Set(Object.values(c)).size, names.length);
   assert.ok(Object.entries(c).every(([n, v]) => n === "Infra" || PALETTE.includes(v)));
 });
+
+test("hashKey gives distinct cache names for paths of the same length", async () => {
+  const { hashKey } = await import("../mods/crest/crest.js");
+  const a = hashKey("/code/worktrees/web/fix-a"), b = hashKey("/code/worktrees/web/fix-b");
+  assert.notEqual(a, b);
+  assert.equal(a, hashKey("/code/worktrees/web/fix-a"));
+  assert.match(a, /^[0-9a-f]{8}$/);
+});

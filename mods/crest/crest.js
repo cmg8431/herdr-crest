@@ -36,6 +36,16 @@ export function hashColor(key) {
   return PALETTE[h % PALETTE.length];
 }
 
+/** A short stable id for a path (FNV-1a, 32 bit, hex): cache file names that never collide by accident. */
+export function hashKey(str) {
+  let h = 0x811c9dc5;
+  for (const c of String(str)) {
+    h ^= c.codePointAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 /** `git@github.com:o/r.git`, `https://gitlab.com/o/r` ... -> { host, owner, repo } */
 export function parseRemote(url) {
   const hit = REMOTE.exec(String(url ?? "").trim());

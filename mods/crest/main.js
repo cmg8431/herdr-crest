@@ -430,7 +430,7 @@ export default class Spaces extends View {
     }
     if (this.cfg.icon === "auto" || this.cfg.icon === "project") info.project = await this.projectIcon(info.top);
     const custom = this.cfg.icons[info.name] ?? null;
-    if (custom) info.custom = await this.copyIcon(custom, `c_${C.hashColor(custom).slice(1)}_${custom.length}`);
+    if (custom) info.custom = await this.copyIcon(custom, `c_${C.hashKey(custom)}`);
   }
 
   // A folder's automatic name: the owner's display name on GitHub (public API, once per owner).
@@ -450,7 +450,7 @@ export default class Spaces extends View {
     if (top in this.icons) return this.icons[top] || null;
     const ls = await exec("git", ["-C", top, "ls-files", "--", "*favicon.svg", "*favicon.png", "*apple-touch-icon.png", "*icon.svg", "*icon.png", "*logo.svg", "*logo.png", ".crest.*"]).catch(() => null);
     const pick = C.pickIcon((ls?.stdout ?? "").split("\n").filter(Boolean));
-    this.icons[top] = pick ? (await this.copyIcon(`${top}/${pick}`, `p_${C.hashColor(top).slice(1)}_${top.length}`)) ?? "" : "";
+    this.icons[top] = pick ? (await this.copyIcon(`${top}/${pick}`, `p_${C.hashKey(top)}`)) ?? "" : "";
     return this.icons[top] || null;
   }
 
