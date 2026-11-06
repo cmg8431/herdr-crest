@@ -1,0 +1,4 @@
+spaces-pretty is a modified copy of the "spaces" mod shipped with Herdr
+(https://herdr.dev), version 0.1.13, licensed under the Apache License 2.0.
+Changes: avatar color by repo, GitHub owner picture as avatar, larger rounded
+avatar, branch icon tinted with the repo color. See mods/spaces-pretty/main.js.
