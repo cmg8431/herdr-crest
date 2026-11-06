@@ -5,7 +5,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -51,6 +51,11 @@ const pretty = (key) => { let h = 0; for (const c of String(key)) h = (h * 31 + 
 
 export default class Spaces extends View {
   init(_props, cx) {
+    // Optional ~/.config/herdr-app/spaces-pretty.json: { "size": 24, "radius": 8, "dot": true }
+    this.cfg = { size: 24, radius: 8, dot: true };
+    readTextFile(`${appHome()}/spaces-pretty.json`).then((raw) => {
+      try { const c = JSON.parse(raw ?? "{}"); this.cfg = { ...this.cfg, ...Object.fromEntries(Object.entries(c).filter(([k]) => k in this.cfg)) }; cx.notify(); } catch { /* keep defaults */ }
+    }).catch(() => null);
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
@@ -226,13 +231,14 @@ export default class Spaces extends View {
           info.behind = Math.abs(parseInt(b, 10)) || 0;
         }
       }
-      // GitHub owner (org or user) from origin, for its avatar picture.
+      // Who owns the repo (GitHub, GitLab, Codeberg, Bitbucket) from origin, for its picture.
       if (!on) {
         const rem = await exec("git", ["config", "--get", "remote.origin.url"], { cwd });
-        const owner = /github\.com[:/]([A-Za-z0-9_-]+)\//.exec(rem.stdout ?? "")?.[1];
-        if (owner) {
-          info.owner = owner;
-          await exec("sh", ["-c", 'd="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/avatars"; f="$d/$1.png"; mkdir -p "$d"; if [ ! -s "$f" ] || [ -n "$(find "$f" -mtime +7 2>/dev/null)" ]; then curl -fsSL -m 15 -o "$f.tmp" "https://github.com/$1.png?size=96" && mv "$f.tmp" "$f"; fi', "sh", owner]).catch(() => null);
+        const hit = /(github\.com|gitlab\.com|codeberg\.org|bitbucket\.org)[:/]([A-Za-z0-9_.-]+)\//.exec(rem.stdout ?? "");
+        if (hit) {
+          const [, host, owner] = hit;
+          info.avatar = host === "github.com" ? owner : `${host}__${owner}`;
+          await exec("sh", [`${appHome()}/mods/spaces-pretty/fetch-avatar.sh`, host, owner]).catch(() => null);
         }
       }
       this.git[key] = info;
@@ -382,11 +388,12 @@ export default class Spaces extends View {
 
   // Round avatar with a colored ring; a status dot on its corner when an agent works, waits or finishes.
   avatar(w, g, fill, t) {
-    const live = ["blocked", "done"].includes(w.status);
-    const face = g?.owner
-      ? h_flex().size(24).flex_none().rounded(8).overflow_hidden().child(image(`avatars/${g.owner}.png`).size(24).rounded(8))
-      : h_flex().size(24).flex_none().rounded(8).bg(fill).items_center().justify_center().text_size(12).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
-    return div().relative().size(24).flex_none().rounded(8).items_center().justify_center()
+    const { size, radius, dot } = this.cfg;
+    const live = dot && ["blocked", "done"].includes(w.status);
+    const face = g?.avatar
+      ? h_flex().size(size).flex_none().rounded(radius).overflow_hidden().child(image(`avatars/${g.avatar}.png`).size(size).rounded(radius))
+      : h_flex().size(size).flex_none().rounded(radius).bg(fill).items_center().justify_center().text_size(Math.round(size / 2)).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
+    return div().relative().size(size).flex_none().rounded(radius).items_center().justify_center()
       .child(face)
       .when(live, (el) => el.child(div().absolute().right(-2).bottom(-2).size(8).rounded(4).bg(tone(t, w.status)).border(1.5).border_color(t.chrome ?? t.background)));
   }

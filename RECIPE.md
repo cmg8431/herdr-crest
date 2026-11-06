@@ -10,14 +10,14 @@ A Spaces sidebar where each space wears its GitHub owner's picture, and a repo's
 
 ## How it behaves
 - Color: hash of the repo key into 10 colors (#6366f1 #14b8a6 #f59e0b #ec4899 #22c55e #0ea5e9 #a855f7 #ef4444 #84cc16 #f97316). A color stored in `shared("space.colors")` for that space wins.
-- On each git check, read `remote.origin.url`; parse `github.com[:/]<owner>/`; download `https://github.com/<owner>.png?size=96` to `avatars/<owner>.png` under the Herdr home if missing or older than 7 days (write to a temp file, then move); draw it with `image("avatars/<owner>.png")` (paths resolve against the Herdr home).
+- On each git check, read `remote.origin.url`; parse `(github.com|gitlab.com|codeberg.org|bitbucket.org)[:/]<owner>/` and run `fetch-avatar.sh <host> <owner>`; download `https://github.com/<owner>.png?size=96` to `avatars/<owner>.png` under the Herdr home if missing or older than 7 days (write to a temp file, then move); draw it with `image("avatars/<owner>.png")` (paths resolve against the Herdr home).
 
 ## Built from
 A clone of the shipped `spaces` mod (`mod.clone`), with the avatar code in `row()` and `check()` changed. Uses `exec`, `image`, `shared`.
 
 ## Watch out
 - `image()` loads files from the app directory only, not URLs, hence the download.
-- Only GitHub is handled; other hosts keep the letter avatar.
+- Other hosts keep the letter avatar. Optional `spaces-pretty.json` sets `size`, `radius`, `dot`.
 
 ## Done when
 - A space in a GitHub repo shows the owner picture; a space in `~` shows a colored letter.
