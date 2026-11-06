@@ -232,7 +232,7 @@ export default class Spaces extends View {
         const owner = /github\.com[:/]([A-Za-z0-9_-]+)\//.exec(rem.stdout ?? "")?.[1];
         if (owner) {
           info.owner = owner;
-          await exec("sh", ["-c", 'f="$HOME/.config/herdr-app/avatars/$1.png"; mkdir -p "${f%/*}"; [ -s "$f" ] || curl -sL -m 15 -o "$f" "https://github.com/$1.png?size=96"', "sh", owner]).catch(() => null);
+          await exec("sh", ["-c", 'd="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/avatars"; f="$d/$1.png"; mkdir -p "$d"; if [ ! -s "$f" ] || [ -n "$(find "$f" -mtime +7 2>/dev/null)" ]; then curl -fsSL -m 15 -o "$f.tmp" "https://github.com/$1.png?size=96" && mv "$f.tmp" "$f"; fi', "sh", owner]).catch(() => null);
         }
       }
       this.git[key] = info;
@@ -380,6 +380,17 @@ export default class Spaces extends View {
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
+  // Round avatar with a colored ring; a status dot on its corner when an agent works, waits or finishes.
+  avatar(w, g, fill, t) {
+    const live = ["working", "blocked", "done"].includes(w.status);
+    const face = g?.owner
+      ? h_flex().size(24).flex_none().rounded(12).overflow_hidden().child(image(`avatars/${g.owner}.png`).size(24))
+      : h_flex().size(24).flex_none().rounded(12).bg(fill).items_center().justify_center().text_size(12).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
+    return div().relative().size(28).flex_none().rounded(14).border(2).border_color(fill).items_center().justify_center()
+      .child(face)
+      .when(live, (el) => el.child(div().absolute().right(-3).bottom(-3).size(10).rounded(5).bg(tone(t, w.status)).border(2).border_color(t.chrome ?? t.background)));
+  }
+
   row({ w, i, g, tree }, t) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
@@ -431,9 +442,7 @@ export default class Spaces extends View {
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)))
-          .when(!tree, el => el.child(g?.owner
-            ? h_flex().size(22).flex_none().rounded(7).overflow_hidden().child(image(`avatars/${g.owner}.png`).size(22))
-            : h_flex().size(22).flex_none().rounded(7).bg(fill).items_center().justify_center().text_size(12).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
+          .when(!tree, el => el.child(this.avatar(w, g, fill, t)))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
