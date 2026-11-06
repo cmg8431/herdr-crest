@@ -3,7 +3,7 @@
 A Spaces sidebar where each space wears its GitHub owner's picture, and a repo's worktrees share a color.
 
 ## What you see
-- Space rows: a 26px round avatar (22px face inside a 1px ring in the repo color; pictures are clipped round), the space name, then the usual repo/branch/ahead-behind tail.
+- Space rows: a 24px avatar with 8px corners and no border (pictures are clipped to the same radius), the space name, then the usual repo/branch/ahead-behind tail.
 - Avatar: the GitHub owner picture when origin is on github.com, else a white bold letter (12px) on a repo-colored tile.
 - An 8px status dot on the avatar corner when the space status is blocked or done.
 - Worktree rows (nested under their repo): a branch icon tinted with the repo color.

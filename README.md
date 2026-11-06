@@ -17,7 +17,7 @@
 When you run a dozen agents across a dozen repos, the sidebar turns into a wall of identical letter tiles. spaces-pretty gives every space a face.
 
 - **GitHub owner avatar.** The org logo or user photo of the repo's `origin` becomes the space icon.
-- **Round, with a thin colored ring.** One color per repo, so a repo and all of its worktrees read as one family.
+- **Softly rounded, no frame.** A 24px tile with 8px corners. Letter tiles take one color per repo, and worktree branch icons share it, so a repo and its worktrees read as one family.
 - **Status dot.** A small dot on the avatar when an agent in that space is blocked or done.
 - **Tinted worktree rows.** The branch icon of a worktree takes its repo's color.
 - **Safe fallback.** No GitHub remote? You get a clean colored letter, like before.
