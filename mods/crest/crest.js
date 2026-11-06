@@ -52,6 +52,24 @@ export function parseRemote(url) {
   return hit ? { host: hit[1], owner: hit[2], repo: hit[3] } : null;
 }
 
+/** The ssh host alias in a remote parseRemote can't read (`git@github-work:o/r.git` -> "github-work"), else null.
+ *  `ssh -G <alias>` says which host it is: see sshHostname and withHost. */
+export function sshAlias(url) {
+  const s = String(url ?? "").trim();
+  if (parseRemote(s)) return null;
+  return /^(?:[^@\s/]+@)?([A-Za-z0-9_.-]+):(?!\/)\S/.exec(s)?.[1] ?? null;
+}
+
+/** The real host from `ssh -G` output, or null. */
+export function sshHostname(out) {
+  return /^hostname (\S+)$/m.exec(String(out ?? ""))?.[1] ?? null;
+}
+
+/** The remote with its ssh host alias swapped for the real host. */
+export function withHost(url, alias, host) {
+  return String(url ?? "").trim().replace(`${alias}:`, `${host}:`);
+}
+
 /** File stem of a downloaded owner picture. GitHub owners keep their bare name. */
 export function avatarKey(host, owner) {
   return host === "github.com" ? owner : `${host}__${owner}`;

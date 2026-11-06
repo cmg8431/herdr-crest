@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  hashColor, PALETTE, parseRemote, avatarKey, pickIcon, chooseIcon, initial, normalizeConfig, DEFAULTS,
+  hashColor, PALETTE, parseRemote, sshAlias, sshHostname, withHost, avatarKey, pickIcon, chooseIcon, initial, normalizeConfig, DEFAULTS,
   memberKey, matches, folderFor, toBlocks, sections, arrange, needsHeaders, toggleFold, assign, renameFolder,
   summarize, topStatus, stackOf, countDirty, parsePr, isTrunk, sortFolders, moveFolder, stepFolder, nest, mainTop,
 } from "../mods/crest/crest.js";
@@ -24,6 +24,23 @@ test("parseRemote reads ssh and https remotes on every host", () => {
   assert.equal(parseRemote("https://example.com/a/b"), null);
   assert.equal(parseRemote(""), null);
   assert.equal(parseRemote(undefined), null);
+});
+
+test("sshAlias finds host aliases parseRemote can't read", () => {
+  assert.equal(sshAlias("git@github-work:acme/api.git"), "github-work");
+  assert.equal(sshAlias("github-work:acme/api\n"), "github-work");
+  assert.equal(sshAlias("git@github.com:mui/base-ui.git"), null);
+  assert.equal(sshAlias("https://example.com/a/b"), null);
+  assert.equal(sshAlias("ssh://git@example.com:22/a/b"), null);
+  assert.equal(sshAlias("/srv/git/repo.git"), null);
+  assert.equal(sshAlias(""), null);
+  assert.equal(sshAlias(undefined), null);
+});
+
+test("sshHostname reads ssh -G and withHost swaps the alias out", () => {
+  assert.equal(sshHostname("user git\nhostname github.com\nport 22\n"), "github.com");
+  assert.equal(sshHostname(""), null);
+  assert.deepEqual(parseRemote(withHost("git@github-work:acme/api.git", "github-work", "github.com")), { host: "github.com", owner: "acme", repo: "api" });
 });
 
 test("avatarKey keeps GitHub owners bare", () => {
