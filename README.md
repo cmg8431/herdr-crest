@@ -8,7 +8,7 @@
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![herdr mod](https://img.shields.io/badge/herdr-mod-6366f1.svg)](https://herdr.dev/mods)
-[![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#)
+[![platform](https://img.shields.io/badge/tested-macOS-lightgrey.svg)](#)
 
 <img src="assets/preview.png" alt="spaces-pretty showing GitHub owner avatars with colored rings" width="520">
 
