@@ -413,7 +413,13 @@ export default class Spaces extends View {
       t, ...it, last: i === items.length - 1,
       hovered: this.hover === `line:${it.id}`,
       onHover: (on, cx) => this.setHover(`line:${it.id}`, on, cx),
-      onClose: it.pane ? () => run("pane.close", { pane: it.pane }) : null,
+      armed: this.armed?.id === it.id && Date.now() - this.armed.at < 3000,
+      onClose: it.pane ? (_e, cx) => {
+        // The first click arms, a second one within 3 s closes: an agent's work is easy to lose.
+        if (this.armed?.id === it.id && Date.now() - this.armed.at < 3000) { this.armed = null; run("pane.close", { pane: it.pane }); }
+        else { this.armed = { id: it.id, at: Date.now() }; cx.timer.after(3100, (cx) => cx.notify()); }
+        cx.notify();
+      } : null,
       onClick: (_e, cx) => { run("space.select", { id: w.id }); it.go(); cx.notify(); },
     }));
   }
@@ -738,11 +744,10 @@ export default class Spaces extends View {
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)))
           .when(!tree, el => el.child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && (["blocked", "done"].includes(w.status) || (w.status === "working" && this.cfg.agents === "none")) ? w.status : null })))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(this.hover === `row:${w.id}` && this.pressed === null
-            ? h_flex().flex_1().justify_end().gap(2)
-              .child(U.iconButton({ t, id: `crest-new-${w.id}`, icon: "plus", tip: "New terminal or agent here", onClick: () => this.quickNew(w) }))
-              .child(U.iconButton({ t, id: `crest-close-${w.id}`, icon: "x", tip: "Close space", onClick: () => run("space.close", { id: w.id }) }))
-            : g ? this.gitTail(g, tree, w.name, t, key) : div().flex_1()),
+          .child(g ? this.gitTail(g, tree, w.name, t, key) : div().flex_1())
+          .when(this.hover === `row:${w.id}` && this.pressed === null, (el) => el.child(h_flex().flex_none().gap(2)
+            .child(U.iconButton({ t, id: `crest-new-${w.id}`, icon: "plus", tip: "New terminal or agent here", onClick: () => this.quickNew(w) }))
+            .child(U.iconButton({ t, id: `crest-close-${w.id}`, icon: "x", tip: "Close space", onClick: () => run("space.close", { id: w.id }) })))),
       );
   }
 

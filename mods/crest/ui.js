@@ -117,7 +117,7 @@ function programIcon(p, size, color) {
  * One line under a space: an agent (status, icon, what it's on, how long) or a running program.
  * The thin rail on the left ties it to the space above.
  */
-export function subLine({ t, id, program, text, age, status, last, hovered, onHover, onClose, onClick }) {
+export function subLine({ t, id, program, text, age, status, last, hovered, armed, onHover, onClose, onClick }) {
   const pic = programIcon(program, 13, t.muted);
   return h_flex().id(id).h(24).flex_none().pl(19).pr(8).items_center().rounded(6)
     .hover((s) => s.bg(t.hover))
@@ -128,7 +128,7 @@ export function subLine({ t, id, program, text, age, status, last, hovered, onHo
     .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(status === "blocked" ? t.foreground : t.muted).child(text))
     .on_hover(onHover)
     .when(Boolean(age) && !hovered, (el) => el.child(div().flex_none().pl(6).text_size(10.5).text_color(t.dim).child(age)))
-    .when(hovered && Boolean(onClose), (el) => el.child(iconButton({ t, id: `${id}-x`, icon: "x", tip: "Close this terminal", onClick: onClose })));
+    .when((hovered || armed) && Boolean(onClose), (el) => el.child(iconButton({ t, id: `${id}-x`, icon: "x", tip: armed ? "Click again to close" : "Close this terminal", danger: armed, onClick: onClose })));
 }
 
 /** The space after the last folder: drop here to move a folder (or a space) to the very end. */
@@ -140,9 +140,10 @@ export function endZone({ t, landing, onMove, onUp }) {
 }
 
 /** A small square button that shows on hover: an icon, a tooltip, no text. */
-export function iconButton({ t, id, icon, tip, onClick }) {
+export function iconButton({ t, id, icon, tip, onClick, danger }) {
   return h_flex().id(id).size(20).flex_none().rounded(5).items_center().justify_center().cursor_pointer()
-    .text_color(t.dim).tooltip(tip)
+    .text_color(danger ? (t.blocked ?? t.ansi1) : t.dim).tooltip(tip)
+    .when(Boolean(danger), (el) => el.bg((t.blocked ?? "#ef4444") + "22"))
     .hover((s) => s.bg(t.hover).text_color(t.foreground))
     .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
     .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
