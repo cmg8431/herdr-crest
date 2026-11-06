@@ -67,7 +67,7 @@ function addItems(p) {
   const list = [["New space here…", "plus", async () => {
     const folder = await pickFolder({ prompt: "Open" });
     if (!folder) return;
-    setShared("crest.pending", { folder, to: p.name });
+    setShared("crest.pending", { folder, to: p.name, at: Date.now() });
     run("space.new", { folder });
   }]];
   list.push(["—"]);
@@ -134,6 +134,7 @@ export class Menu {
       cx.notify();
     });
     if (p.kind === "newfolder") this.openInput("new", cx);
+    if (p.startRename) this.openInput("rename", cx);
   }
 
   openInput(mode, cx) {

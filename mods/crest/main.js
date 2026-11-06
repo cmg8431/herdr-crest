@@ -426,6 +426,14 @@ export default class Spaces extends View {
 
   // Who owns the repo and what it looks like: owner picture, project icon. Local only.
   async identify(info, cwd) {
+    // Git changes come often; who owns a repo and what it looks like do not. Ask once per checkout every 10 minutes.
+    const memo = (this.idents ??= {})[info.top];
+    if (memo && Date.now() - memo.at < 10 * 60 * 1000) { Object.assign(info, memo.fields); return; }
+    await this.identifyNow(info, cwd);
+    this.idents[info.top] = { at: Date.now(), fields: { owner: info.owner, host: info.host, avatar: info.avatar, project: info.project, custom: info.custom } };
+  }
+
+  async identifyNow(info, cwd) {
     const rem = await exec("git", ["config", "--get", "remote.origin.url"], { cwd }).catch(() => null);
     const hit = C.parseRemote(rem?.stdout);
     if (hit) {
@@ -500,6 +508,7 @@ export default class Spaces extends View {
   claimPending(rows) {
     const p = shared("crest.pending");
     if (!p) return;
+    if (p.at && Date.now() - p.at > 2 * 60 * 1000) { setShared("crest.pending", null); return; }
     const row = rows.find((r) => !r.tree && (r.w.folder === p.folder || r.g?.top === p.folder));
     if (row && row.g) { this.joinFolder(row, p.to); setShared("crest.pending", null); }
   }
@@ -584,6 +593,8 @@ export default class Spaces extends View {
         onClick: (e, cx) => {
           if (dragging || this.skipClick) { this.skipClick = false; return; }
           setShared("crest.folded", C.toggleFold(folded, sec.name, names, Boolean(e?.modifiers?.alt)));
+          // A double-click folds and unfolds (no change) and opens the name field.
+          if (e?.click_count === 2) openOverlay({ mod: "crest", kind: "popup", width: 240, height: 140, props: { crestMenu: true, kind: "folder", startRename: true, name: sec.name, label, color, manual: sec.kind === "manual", names } });
           cx.notify();
         },
         onMenu: () => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 380, props: { crestMenu: true, kind: "folder", name: sec.name, label, color, manual: sec.kind === "manual", names, members: sec.tops.map((r) => C.memberKey(r)) } }),

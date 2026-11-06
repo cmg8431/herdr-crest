@@ -25,7 +25,7 @@ A Spaces sidebar for [Herdr](https://herdr.dev). Each space shows its project's 
 
 **Quick actions, no dragging.** Hover a folder and press `+` to put spaces in it with one click each, or start a new space there. Hover a space for `+` (a terminal, an agent, a worktree or a new space) and `×` to close it. Hover an agent line for `×`. The folder button next to `+` at the top makes a new folder.
 
-Right-click a space or a folder for everything else. Alt+click a folder to keep only that one open. In a narrow sidebar, each folder is a rounded column of tiles that still folds.
+Right-click a space or a folder for everything else. Double-click a folder to rename it, Alt+click to keep only that one open. In a narrow sidebar, each folder is a rounded column of tiles that still folds.
 
 ## Install
 
