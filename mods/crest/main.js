@@ -302,40 +302,32 @@ export default class Spaces extends View {
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
-    const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
-    const nested = (r) => r.g?.linked && mains.has(r.g.repo);
-    let out = [];
-    const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
-    for (const r of list) {
-      if (nested(r)) continue;
-      out.push({ ...r, tree: null });
-      if (!r.g || r.g.linked || placed.has(r.g.repo)) continue;
-      placed.add(r.g.repo);
-      const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
-      kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
-    }
     // Keep each folder together so Cmd+1..9 follows what the sidebar shows.
-    out = C.arrange(out, this.folderCtx());
+    const out = C.arrange(C.nest(list), this.folderCtx());
+    // Stand-in repo rows aren't spaces: they take no place in the space order.
+    const real = out.filter(r => !r.ghost);
     // Simulate the batch so later indexes include earlier moves. An attempted
     // write can lose a sync conflict: allow the echo to settle before retrying.
     const order = sp.map(w => w.id);
-    const target = out.map(r => r.w.id);
+    const target = real.map(r => r.w.id);
     const key = JSON.stringify([order, target, machines()]);
     if (order.every((id, i) => id === target[i])) {
       this.ordering = null;
     } else if (this.ordering?.key !== key || this.orderingDue(Date.now())) {
       const moved = new Set();
       this.ordering = { key, at: Date.now(), machines: [] };
-      for (let i = 0; i < out.length; i++) {
-        const from = order.indexOf(out[i].w.id);
+      for (let i = 0; i < real.length; i++) {
+        const from = order.indexOf(real[i].w.id);
         if (from === i) continue;
-        run("space.move", { id: out[i].w.id, index: i + 1 });
-        moved.add(out[i].w.machine ?? null);
+        run("space.move", { id: real[i].w.id, index: i + 1 });
+        moved.add(real[i].w.machine ?? null);
         order.splice(i, 0, order.splice(from, 1)[0]);
       }
       this.ordering.machines = [...moved];
     }
-    return out.filter(r => this.shown.has(r.w.id));
+    const vis = out.filter(r => r.ghost || this.shown.has(r.w.id));
+    // A stand-in shows only while worktrees are listed under it.
+    return vis.filter((r, n) => !r.ghost || Boolean(vis[n + 1]?.tree));
   }
 
   // The rows, under a header per machine once one isn't this computer.
@@ -393,6 +385,7 @@ export default class Spaces extends View {
   // and master/main go: nearly every space is on one.
   // A space row and, under it, what is running there: agents that need a look or are busy, and programs.
   block(r, t) {
+    if (r.ghost) return this.ghostRow(r, t);
     const lines = this.subLines(r.w, t);
     if (!lines.length) return this.row(r, t);
     return v_flex().flex_none().child(this.row(r, t)).children(lines);
@@ -751,8 +744,40 @@ export default class Spaces extends View {
       );
   }
 
+  // A repo whose main checkout isn't open, over its worktrees: its picture and name, dimmed.
+  // Click opens the checkout (it then takes this row's place); + makes another worktree.
+  openMain(r) {
+    if (r.w.folder) run("space.new", { folder: r.w.folder, machine: r.w.machine ?? "" });
+  }
+
+  newWorktree(r) {
+    openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: r.first, folder: r.w.folder ?? undefined, action: "new" } });
+  }
+
+  ghostRow(r, t) {
+    const { w, g } = r;
+    const fill = C.hashColor(g.repo);
+    const hovered = this.hover === `row:${w.id}` && this.pressed === null;
+    return h_flex().id(`space-${w.id}`).px(8).h(rowHeight({})).flex_none().gap(9).items_center().rounded(8)
+      .hover((s) => s.bg(t.hover))
+      .when(Boolean(w.folder), (el) => el.tooltip(`Open ${w.name}`).on_click(() => this.openMain(r)))
+      .on_mouse_up("left", (_e, cx) => this.endDrags(cx))
+      .on_hover((on, cx) => this.setHover(`row:${w.id}`, on, cx))
+      .child(div().opacity(0.6).child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g), letter: C.initial(w.name), fill })))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(w.name))
+      .when(hovered, (el) => el.child(U.iconButton({ t, id: `crest-wt-${w.id}`, icon: "plus", tip: "New worktree", onClick: () => this.newWorktree(r) })));
+  }
+
   // The narrow sidebar: just the tiles, with their status dot.
-  compact({ w, g, tree }, t) {
+  compact(r, t) {
+    const { w, g, tree } = r;
+    if (r.ghost) {
+      return h_flex().id(`space-${w.id}`).h(36).w_full().flex_none().justify_center().items_center()
+        .tooltip(w.name)
+        .when(Boolean(w.folder), (el) => el.on_click(() => this.openMain(r)))
+        .child(h_flex().size(32).flex_none().rounded(9).items_center().justify_center().opacity(0.6).hover((s) => s.bg(t.hover))
+          .child(U.tile({ t, size: 24, radius: Math.min(this.cfg.radius, 12), icon: this.iconFor(g), letter: C.initial(w.name), fill: C.hashColor(g.repo) })));
+    }
     const colors = shared("space.colors") ?? {};
     const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
     const face = tree

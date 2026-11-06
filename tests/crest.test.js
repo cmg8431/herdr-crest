@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   hashColor, PALETTE, parseRemote, avatarKey, pickIcon, chooseIcon, initial, normalizeConfig, DEFAULTS,
   memberKey, matches, folderFor, toBlocks, sections, arrange, needsHeaders, toggleFold, assign, renameFolder,
-  summarize, topStatus, stackOf, countDirty, parsePr, isTrunk, sortFolders, moveFolder, stepFolder,
+  summarize, topStatus, stackOf, countDirty, parsePr, isTrunk, sortFolders, moveFolder, stepFolder, nest, mainTop,
 } from "../mods/crest/crest.js";
 
 const row = (id, { owner, name, repo, status, tree, space } = {}) => ({
@@ -226,6 +226,31 @@ test("folderColors never repeats while colors remain, and keeps yours", async ()
   assert.equal(c.Infra, "#000000");
   assert.equal(new Set(Object.values(c)).size, names.length);
   assert.ok(Object.entries(c).every(([n, v]) => n === "Infra" || PALETTE.includes(v)));
+});
+
+const wt = (id, repo, linked, machine = null) => ({ w: { id, name: id, machine }, i: 0, g: { repo: JSON.stringify([machine, `/c/${repo}/.git`]), name: repo, linked, owner: "o" } });
+
+test("nest puts worktrees under their open main checkout", () => {
+  const out = nest([wt("main", "app", false), wt("a", "app", true), wt("x", "other", false), wt("b", "app", true)]);
+  assert.deepEqual(out.map((r) => [r.w.id, r.tree]), [["main", null], ["a", "├─"], ["b", "└─"], ["x", null]]);
+  assert.ok(out.every((r) => !r.ghost));
+});
+
+test("nest groups worktrees of a repo whose main checkout isn't open under a stand-in", () => {
+  const out = nest([wt("home", "dots", false), wt("a", "app", true), wt("b", "app", true), wt("solo", "lib", true), wt("c", "app", true)]);
+  assert.deepEqual(out.map((r) => [r.w.id, r.tree]), [["home", null], ["ghost:" + wt("a", "app").g.repo, null], ["a", "├─"], ["b", "├─"], ["c", "└─"], ["solo", null]]);
+  const ghost = out[1];
+  assert.equal(ghost.ghost, true);
+  assert.equal(ghost.w.name, "app");
+  assert.equal(ghost.w.folder, "/c/app");
+  assert.equal(ghost.first, "a");
+  assert.equal(memberKey(ghost), memberKey(out[2]), "the stand-in and its worktrees file into the same folder");
+});
+
+test("mainTop reads the checkout from the git-common-dir key", () => {
+  assert.equal(mainTop(JSON.stringify([null, "/u/code/app/.git"])), "/u/code/app");
+  assert.equal(mainTop(JSON.stringify([null, "/u/code/app.git"])), null);
+  assert.equal(mainTop("nope"), null);
 });
 
 test("hashKey gives distinct cache names for paths of the same length", async () => {

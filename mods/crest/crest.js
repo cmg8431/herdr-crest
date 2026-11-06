@@ -164,6 +164,52 @@ export function removeFolder({ manual = {}, hidden = [] }, name) {
   return { manual: next, hidden: hidden.includes(name) ? hidden : [...hidden, name] };
 }
 
+/** A repo's main checkout from its git-common-dir key `[machine, ".../repo/.git"]`; null for a bare repo. */
+export function mainTop(repo) {
+  try {
+    const dir = JSON.parse(repo)[1];
+    return typeof dir === "string" && dir.endsWith("/.git") ? dir.slice(0, -5) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Spaces in sidebar order, each worktree under its repo's main checkout.
+ * When the main checkout isn't open, two or more worktrees of one repo go under a
+ * stand-in row for the repo (`ghost: true`), so they still read as one group.
+ * @param {Row[]} list spaces in their order, each `{ w, i, g }`
+ */
+export function nest(list) {
+  const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
+  const count = {};
+  for (const r of list) if (r.g?.linked && !mains.has(r.g.repo)) count[r.g.repo] = (count[r.g.repo] ?? 0) + 1;
+  const under = (r) => Boolean(r.g?.linked) && (mains.has(r.g.repo) || count[r.g.repo] > 1);
+  const kids = (repo) => list.filter((k) => under(k) && k.g.repo === repo).map((k, n, all) => ({ ...k, tree: n === all.length - 1 ? "└─" : "├─" }));
+  const out = [];
+  const placed = new Set();
+  for (const r of list) {
+    if (under(r)) {
+      if (mains.has(r.g.repo) || placed.has(r.g.repo)) continue;
+      placed.add(r.g.repo);
+      const top = mainTop(r.g.repo);
+      out.push({
+        ghost: true, i: r.i, tree: null,
+        w: { id: `ghost:${r.g.repo}`, name: r.g.name, folder: top, machine: r.w.machine ?? null, status: null, tabs: [] },
+        g: { ...r.g, linked: false, branch: null, ahead: 0, behind: 0, dirty: 0, top },
+        first: r.w.id,
+      });
+      out.push(...kids(r.g.repo));
+      continue;
+    }
+    out.push({ ...r, tree: null });
+    if (!r.g || r.g.linked || placed.has(r.g.repo)) continue;
+    placed.add(r.g.repo);
+    out.push(...kids(r.g.repo));
+  }
+  return out;
+}
+
 /** Rows (parents followed by their tree children) -> blocks that start at a top-level row. */
 export function toBlocks(rows) {
   const blocks = [];

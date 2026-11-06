@@ -21,6 +21,7 @@ A Spaces sidebar for [Herdr](https://herdr.dev). Each space shows its project's 
 - **Folders.** Spaces are grouped by owner from the start, named after the owner (`caddyserver` shows as Caddy). Make your own folders, drag spaces in and out, drag folders to reorder, rename them, pick a color, close them. A closed folder still shows who is inside and whether an agent there needs you.
 - **What's running.** Under a space, its busy agents (and, if you want, dev servers). Click one to jump to it.
 - **Git at a glance.** Branch, ahead and behind, a dot for uncommitted changes, and the pull request number in its state's color. Click the number to open it.
+- **Worktrees stay together.** Worktrees sit under their repo's space. If the repo itself isn't open, they still group under a dimmed repo row: click it to open the repo, or `+` for another worktree.
 - **Pin** a space to keep it at the top.
 
 **Quick actions, no dragging.** Hover a folder and press `+` to put spaces in it with one click each, or start a new space there. Hover a space for `+` (a terminal, an agent, a worktree or a new space) and `×` to close it. Hover an agent line for `×`. The folder button next to `+` at the top makes a new folder.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 - 2026-11-06
+
+- Worktrees of one repo group together even when the repo itself isn't open: they sit under a dimmed repo row. Click it to open the repo, `+` for another worktree.
+
 ## 0.3.0 - 2026-11-06
 
 - Quick actions on hover: `+` on a folder adds spaces in one click or starts a new space there; `+` on a space opens a terminal, an agent, a worktree or a new space; `×` closes a space or an agent's terminal.

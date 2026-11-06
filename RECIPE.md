@@ -8,6 +8,7 @@ A Spaces sidebar where each space shows its project's icon and spaces sit in fol
 
 - **Space row**, 30px: a 24px tile with 8px corners (project icon, else owner picture, else a white letter on the repo's color), the name, then a dim tail: repo and branch when unusual, `↑n` `↓n`, a 5px amber dot for uncommitted changes, and `#123` colored by PR state (open green, draft dim, merged violet, closed red).
 - **Worktree row**, 28px, under its repo's space: a branch icon in the repo's color.
+- **Repo row** (stand-in), 30px, when two or more worktrees of a repo are open but its main checkout isn't: the repo's tile at 60% opacity and its name in the muted color, the worktrees under it. Click opens the main checkout as a space (which then takes its place); hover shows `+` for a new worktree. It is not a space: it takes no place in the space order or Cmd+1..9.
 - **Folder header**, 30px, rounded 8px, a raised background: a filled two-tone folder glyph in the folder's color, the name in the normal text color, the count dim, a chevron on the right. Shut: up to three 15px tiles of who is inside, and a status dot (blocked pulses).
 - **Line under a space**, 24px: a thin rail, a status mark (spinner working, pulsing red blocked, green done), the program icon, the agent's title, how long it has been in that state.
 - Pinned and folderless spaces come first, without a header.
