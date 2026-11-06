@@ -434,7 +434,15 @@ export default class Spaces extends View {
 
   async identifyNow(info, cwd) {
     const rem = await exec("git", ["config", "--get", "remote.origin.url"], { cwd }).catch(() => null);
-    const hit = C.parseRemote(rem?.stdout);
+    const url = (rem?.stdout ?? "").trim();
+    let hit = C.parseRemote(url);
+    // An ssh host alias (git@github-work:o/r): ask ssh's config which host it is. Reads config only.
+    const alias = C.sshAlias(url);
+    if (alias) {
+      const r = await exec("ssh", ["-G", alias]).catch(() => null);
+      const host = r?.code === 0 ? C.sshHostname(r.stdout) : null;
+      if (host && host !== alias) hit = C.parseRemote(C.withHost(url, alias, host));
+    }
     if (hit) {
       info.owner = hit.owner;
       info.host = hit.host;
@@ -487,7 +495,12 @@ export default class Spaces extends View {
       const seen = this.prs[key];
       if (seen && seen.branch === g.branch && now - seen.at < PR_TTL) continue;
       this.prs[key] = { branch: g.branch, at: now, pr: seen?.branch === g.branch ? seen.pr : null };
-      const r = await exec("gh", ["pr", "view", "--json", "number,state,isDraft,url"], { cwd }).catch(() => null);
+      // Through direnv when present, so the repo's .envrc picks the gh account
+      // (GH_CONFIG_DIR); exec has no env option. Plain gh if that fails.
+      if (this.direnv === undefined) this.direnv = (await exec("/bin/sh", ["-c", "command -v direnv"]).catch(() => null))?.code === 0;
+      const view = ["pr", "view", "--json", "number,state,isDraft,url"];
+      let r = this.direnv ? await exec("direnv", ["exec", cwd, "gh", ...view], { cwd }).catch(() => null) : null;
+      if (!r || r.code !== 0) r = await exec("gh", view, { cwd }).catch(() => null);
       this.prs[key].pr = r && r.code === 0 ? C.parsePr(r.stdout) : null;
       cx.notify();
     }

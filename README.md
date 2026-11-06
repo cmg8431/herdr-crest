@@ -59,9 +59,9 @@ Re-open the layout after editing (`Cmd+Shift+L` twice).
 
 ## What it runs
 
-Per space, locally: `git status`, `git config --get remote.origin.url`, `git ls-files` (to find a project icon).
+Per space, locally: `git status`, `git config --get remote.origin.url`, `git ls-files` (to find a project icon). If the remote uses an ssh host alias (`git@github-work:owner/repo`), `ssh -G <alias>` to learn the real host; it reads your ssh config and connects nowhere.
 Once per owner: `curl` to the git host for the owner's picture, and to `api.github.com/users/<owner>` for the folder name.
-Per branch with `pr` on, at most every 5 minutes: `gh pr view`. Pictures are cached in `~/.config/herdr-app/crest-cache/`. Nothing else leaves your machine.
+Per branch with `pr` on, at most every 5 minutes: `gh pr view`, through `direnv exec` when direnv is installed so a repo's `.envrc` can pick the gh account (`GH_CONFIG_DIR`). Pictures are cached in `~/.config/herdr-app/crest-cache/`. Nothing else leaves your machine.
 
 ## Development
 
