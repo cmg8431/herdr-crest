@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 - 2026-11-06
+
+- Quick actions on hover: `+` on a folder adds spaces in one click or starts a new space there; `+` on a space opens a terminal, an agent, a worktree or a new space; `×` closes a space or an agent's terminal.
+- New folder button at the top of the list.
+- Narrow sidebar: folders show as their glyph and fold; worktree rows are smaller.
+- Cover sized for the herdr.dev gallery card.
+
 ## 0.2.0 - 2026-11-06
 
 Renamed from spaces-pretty to Crest.

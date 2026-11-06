@@ -58,7 +58,7 @@ export function folderGlyph(color, shut) {
  * Click folds it (Alt+click: only this one stays open). Drag it onto another header to reorder.
  * While a space is dragged, it is a drop target; while a folder is dragged, a line shows where it lands.
  */
-export function folderHeader({ t, key, label, color, count, shut, status, icons, more, hot, landing, onClick, onMenu, onDown, onMove, onUp }) {
+export function folderHeader({ t, key, label, color, count, shut, status, icons, more, hot, landing, hovered, onHover, onAdd, onClick, onMenu, onDown, onMove, onUp }) {
   return v_flex().flex_none().mt(8).relative()
     .child(h_flex().id(`crest-folder-${key}`).h(30).flex_none().pl(10).pr(8).gap(7).items_center().rounded(8)
       .bg(hot ? t.selected : (t.surface ?? t.raised ?? t.hover))
@@ -68,11 +68,13 @@ export function folderHeader({ t, key, label, color, count, shut, status, icons,
       .on_mouse_down("right", onMenu)
       .on_mouse_move(onMove)
       .on_mouse_up("left", onUp)
+      .on_hover(onHover)
       .child(folderGlyph(color, shut))
       .child(div().flex_shrink(1).min_w(0).truncate().font_medium().text_size(12.5).text_color(t.foreground).child(label))
       .child(div().flex_none().text_size(11).text_color(t.dim).child(String(count)))
       .child(div().flex_1().min_w(4))
-      .when(shut && icons.length > 0, (el) => el.child(stack(t, icons, more)))
+      .when(hovered, (el) => el.child(iconButton({ t, id: `crest-fadd-${key}`, icon: "plus", tip: "Add spaces to this folder", onClick: onAdd })))
+      .when(shut && icons.length > 0 && !hovered, (el) => el.child(stack(t, icons, more)))
       .when(Boolean(status) && shut, (el) => el.child(pulse(div().size(7).flex_none().rounded(4).bg(statusColor(t, status)), status)))
       .child(svg(ICON(shut ? "chevron-right" : "chevron-down")).size(11).flex_none().text_color(t.dim)))
     .when(landing, (el) => el.child(div().absolute().left(4).right(4).top(-5).h(2).rounded(1).bg(t.accent)));
@@ -115,7 +117,7 @@ function programIcon(p, size, color) {
  * One line under a space: an agent (status, icon, what it's on, how long) or a running program.
  * The thin rail on the left ties it to the space above.
  */
-export function subLine({ t, id, program, text, age, status, last, onClick }) {
+export function subLine({ t, id, program, text, age, status, last, hovered, onHover, onClose, onClick }) {
   const pic = programIcon(program, 13, t.muted);
   return h_flex().id(id).h(24).flex_none().pl(19).pr(8).items_center().rounded(6)
     .hover((s) => s.bg(t.hover))
@@ -124,7 +126,9 @@ export function subLine({ t, id, program, text, age, status, last, onClick }) {
     .child(h_flex().w(18).flex_none().justify_center().items_center().child(status ? agentStatus(t, status) : svg(ICON("terminal")).size(11).text_color(t.dim)))
     .when(Boolean(pic), (el) => el.child(div().mr(6).child(pic)))
     .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(status === "blocked" ? t.foreground : t.muted).child(text))
-    .when(Boolean(age), (el) => el.child(div().flex_none().pl(6).text_size(10.5).text_color(t.dim).child(age)));
+    .on_hover(onHover)
+    .when(Boolean(age) && !hovered, (el) => el.child(div().flex_none().pl(6).text_size(10.5).text_color(t.dim).child(age)))
+    .when(hovered && Boolean(onClose), (el) => el.child(iconButton({ t, id: `${id}-x`, icon: "x", tip: "Close this terminal", onClick: onClose })));
 }
 
 /** The space after the last folder: drop here to move a folder (or a space) to the very end. */
@@ -133,4 +137,26 @@ export function endZone({ t, landing, onMove, onUp }) {
     .on_mouse_move(onMove)
     .on_mouse_up("left", onUp)
     .when(landing, (el) => el.child(div().absolute().left(4).right(4).top(4).h(2).rounded(1).bg(t.accent)));
+}
+
+/** A small square button that shows on hover: an icon, a tooltip, no text. */
+export function iconButton({ t, id, icon, tip, onClick }) {
+  return h_flex().id(id).size(20).flex_none().rounded(5).items_center().justify_center().cursor_pointer()
+    .text_color(t.dim).tooltip(tip)
+    .hover((s) => s.bg(t.hover).text_color(t.foreground))
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+    .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
+    .on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); })
+    .child(svg(icon.includes("/") ? icon : ICON(icon)).size(13));
+}
+
+/** A folder in the narrow sidebar: its glyph, centered; the name on hover; a dot when shut and an agent there needs you. */
+export function compactFolder({ t, key, label, color, shut, status, onClick, onMenu }) {
+  return h_flex().id(`crest-cfolder-${key}`).h(26).mt(6).flex_none().justify_center().items_center().rounded(7).relative()
+    .tooltip(label)
+    .hover((s) => s.bg(t.hover))
+    .on_click(onClick)
+    .on_mouse_down("right", onMenu)
+    .child(folderGlyph(color, shut))
+    .when(shut && Boolean(status), (el) => el.child(pulse(div().absolute().right(10).top(5).size(6).rounded(3).bg(statusColor(t, status)), status)));
 }

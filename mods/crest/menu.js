@@ -1,8 +1,8 @@
 // The right-click menu of crest, drawn by the crest mod itself when opened as a popup. For a space: pin, folders, worktrees, rename, close.
 // For a folder: rename, color, fold others, delete. Folders live in shared("crest.folders").
-import { div, svg } from "gpui-kit";
+import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, props, closeOverlay, openOverlay, theme, shared, setShared, exec, appHome } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, shared, setShared, exec, appHome, knownAgents, pickFolder } from "herdr";
 import { PALETTE, assign, renameFolder, hashColor, stepFolder, removeFolder, moveToFolder } from "./crest.js";
 
 const ICON = (name) => (name === "chevron-up" ? "mods/crest/icons/chevron-up.svg" : `mods/workspace-chrome/${name}.svg`);
@@ -49,6 +49,33 @@ function spaceItems(p) {
   return list;
 }
 
+// "+" on a space row: a terminal or an agent in that space.
+function newItems(p, agents) {
+  const list = [["Terminal", "terminal", () => run("tab.new", { space: p.id })]];
+  for (const a of agents) list.push([a.name, a.icon ? `prog:${a.icon}:${a.tint ? 1 : 0}` : "terminal", () => run("tab.new", { name: a.name, space: p.id, argv: a.run })]);
+  list.push(["—"]);
+  if (p.git) list.push(["New worktree…", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: p.id, action: "new" } })]);
+  list.push(["New space", "plus", () => run("space.new", {})]);
+  return list;
+}
+
+// "+" on a folder header: put spaces in it with one click each, or start a new one there.
+function addItems(p) {
+  const list = [["New space here…", "plus", async () => {
+    const folder = await pickFolder({ prompt: "Open" });
+    if (!folder) return;
+    setShared("crest.pending", { folder, to: p.name });
+    run("space.new", { folder });
+  }]];
+  list.push(["—"]);
+  for (const c of p.candidates ?? []) list.push([c.name, c.icon ? `pic:${c.icon}` : `letter:${c.letter}:${c.fill}`, () => {
+    const next = moveToFolder({ manual: folders(), loose: shared("crest.loose") ?? [] }, c.key, p.name);
+    setShared("crest.folders", next.manual);
+    setShared("crest.loose", next.loose);
+  }, c.key]);
+  return list;
+}
+
 function folderItems(p) {
   const names = p.names ?? [];
   const i = names.indexOf(p.name);
@@ -71,12 +98,34 @@ function folderItems(p) {
   return list;
 }
 
+// The left cell of a menu row: a theme icon, a program's icon, a space's picture, or its letter.
+function cell(t, spec) {
+  if (spec.startsWith("pic:")) return h_flex().size(16).flex_none().rounded(5).overflow_hidden().child(image(spec.slice(4)).size(16).rounded(5));
+  if (spec.startsWith("letter:")) {
+    const [, letter, fill] = spec.split(":");
+    return h_flex().size(16).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(9.5).font_bold().text_color("#ffffff").child(letter);
+  }
+  if (spec.startsWith("prog:")) {
+    const [, icon, tint] = spec.split(":");
+    return tint === "1" ? svg(icon).size(14).flex_none().text_color(t.muted) : image(icon).w(14).h(14).flex_none();
+  }
+  return svg(ICON(spec)).size(14).flex_none().text_color(t.muted);
+}
+
 export class Menu {
   constructor(cx) {
     this.mode = null; // "new" | "rename" while the name field is open
     this.handle = cx.focus_handle();
     this.handle.focus();
     this.at = 0;
+    this.agents = [];
+    this.added = new Set(); // spaces put in the folder from this popup
+    const p = props() ?? {};
+    if (p.kind === "new") cx.spawn(async (cx) => {
+      this.agents = (await knownAgents({ on: p.machine ?? null }).catch(() => [])).filter((a) => a.installed);
+      cx.notify();
+    });
+    if (p.kind === "newfolder") this.openInput("new", cx);
   }
 
   openInput(mode, cx) {
@@ -113,6 +162,12 @@ export class Menu {
   choose(it, cx) {
     const action = it[2];
     if (typeof action === "string" && action.startsWith("input:")) return this.openInput(action.slice(6), cx);
+    if (props()?.kind === "add" && it[3]) {
+      // Adding spaces: stay open so several can go in, mark the ones done.
+      if (!this.added.has(it[3])) { action?.(); this.added.add(it[3]); }
+      cx.notify();
+      return;
+    }
     closeOverlay(props()?.overlay);
     action?.();
   }
@@ -127,7 +182,7 @@ export class Menu {
   render() {
     const t = theme();
     const p = props() ?? {};
-    const list = p.kind === "folder" ? folderItems(p) : spaceItems(p);
+    const list = p.kind === "folder" ? folderItems(p) : p.kind === "new" ? newItems(p, this.agents) : p.kind === "add" ? addItems(p) : spaceItems(p);
     const real = list.filter((it) => it[0] !== "—" && it[0] !== "colors");
     const box = v_flex().id("crest-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
       .on_key_down((e, cx) => {
@@ -148,7 +203,8 @@ export class Menu {
     }
 
     const current = p.color ?? hashColor(p.name ?? "");
-    return box.children(list.map((it, i) => {
+    const heading = p.kind === "add" ? `Add to ${p.label ?? p.name}` : p.kind === "new" ? `New in ${p.spaceName ?? "this space"}` : null;
+    return box.when(Boolean(heading), (el) => el.child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).child(heading))).children(list.map((it, i) => {
       if (it[0] === "—") return div().mx(7).my(4).h(1).bg(t.border);
       if (it[0] === "colors") {
         return h_flex().px(8).py(6).gap(6).flex_wrap()
@@ -162,8 +218,9 @@ export class Menu {
         .when(k === this.at, (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => this.choose(it, cx))
-        .child(svg(ICON(it[1])).size(14).flex_none().text_color(t.muted))
-        .child(div().flex_1().truncate().child(it[0]));
+        .child(cell(t, it[1]))
+        .child(div().flex_1().truncate().child(it[0]))
+        .when(Boolean(it[3]) && this.added.has(it[3]), (el) => el.child(svg(ICON("check")).size(13).flex_none().text_color(t.done ?? t.ansi2)));
     }));
   }
 }

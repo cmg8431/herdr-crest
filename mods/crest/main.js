@@ -73,6 +73,7 @@ export default class Spaces extends View {
     this.folderMoved = false;
     this.skipClick = false;
     this.since = {}; // agent address -> { status, at }: how long it has been doing that
+    this.hover = null; // "row:<id>", "folder:<name>" or "line:<id>": shows that thing's quick buttons
     exec("mkdir", ["-p", `${appHome()}/${CACHE}`]).catch(() => null);
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.checked = {}; // where() -> when it was last looked at
@@ -404,10 +405,16 @@ export default class Spaces extends View {
     const list = agents().filter((a) => a.space === w.id && (mode === "all" || a.status !== "idle"));
     const progs = this.cfg.programs ? panes().filter((p) => tabs.has(p.tab) && p.terminal && !p.program?.shell && !p.program?.agent && p.program?.key !== "program") : [];
     const items = [
-      ...list.map((a) => ({ id: `crest-a-${a.address}`, program: a.program, text: C.agentTitle(a), status: a.status, age: C.ago(now - this.age(a, now)), go: () => run("pane.focus", { pane: a.pane }) })),
-      ...progs.map((p) => ({ id: `crest-p-${p.pane}`, program: p.program, text: p.program?.name ?? "program", status: null, age: "", go: () => run("pane.focus", { pane: p.pane }) })),
+      ...list.map((a) => ({ id: `crest-a-${a.address}`, program: a.program, text: C.agentTitle(a), status: a.status, age: C.ago(now - this.age(a, now)), pane: a.pane, go: () => run("pane.focus", { pane: a.pane }) })),
+      ...progs.map((p) => ({ id: `crest-p-${p.pane}`, program: p.program, text: p.program?.name ?? "program", status: null, age: "", pane: p.pane, go: () => run("pane.focus", { pane: p.pane }) })),
     ];
-    return items.map((it, i) => U.subLine({ t, ...it, last: i === items.length - 1, onClick: (_e, cx) => { run("space.select", { id: w.id }); it.go(); cx.notify(); } }));
+    return items.map((it, i) => U.subLine({
+      t, ...it, last: i === items.length - 1,
+      hovered: this.hover === `line:${it.id}`,
+      onHover: (on, cx) => this.setHover(`line:${it.id}`, on, cx),
+      onClose: it.pane ? () => run("pane.close", { pane: it.pane }) : null,
+      onClick: (_e, cx) => { run("space.select", { id: w.id }); it.go(); cx.notify(); },
+    }));
   }
 
   age(a, now) {
@@ -483,6 +490,33 @@ export default class Spaces extends View {
     return C.chooseIcon(this.cfg.icon, { custom: g.custom ?? null, project: g.project ?? null, owner: g.avatar ?? null });
   }
 
+  setHover(key, on, cx) {
+    const next = on ? key : this.hover === key ? null : this.hover;
+    if (next !== this.hover) { this.hover = next; cx.notify(); }
+  }
+
+  // A space made from a folder's "New space here": put it in that folder once its git is known.
+  claimPending(rows) {
+    const p = shared("crest.pending");
+    if (!p) return;
+    const row = rows.find((r) => !r.tree && (r.w.folder === p.folder || r.g?.top === p.folder));
+    if (row && row.g) { this.joinFolder(row, p.to); setShared("crest.pending", null); }
+  }
+
+  quickNew(w) {
+    const row = this.rowsById[w.id];
+    openOverlay({ mod: "crest", kind: "popup", width: 230, height: 340, props: { crestMenu: true, kind: "new", id: w.id, spaceName: w.name, machine: w.machine ?? null, git: Boolean(row?.g) } });
+  }
+
+  quickAdd(sec, label, secs) {
+    const cands = secs.filter((x) => x.name !== sec.name).flatMap((x) => x.tops).map((r) => {
+      const colors = shared("space.colors") ?? {};
+      const fill = String(colors[r.w.id] ?? "").startsWith("#") ? colors[r.w.id] : C.hashColor(r.g?.repo ?? r.w.folder ?? r.w.id);
+      return { key: C.memberKey(r), name: r.w.name, icon: this.iconFor(r.g), letter: C.initial(r.w.name), fill };
+    });
+    openOverlay({ mod: "crest", kind: "popup", width: 260, height: 420, props: { crestMenu: true, kind: "add", name: sec.name, label, candidates: cands } });
+  }
+
   endDrags(cx) {
     if (this.pressed === null && this.folderDrag === null && this.dropOver === null) return;
     this.pressed = null; this.over = null; this.dropOver = null;
@@ -507,9 +541,10 @@ export default class Spaces extends View {
   // Rows under folder headers. Pinned and loose spaces come first, without a header.
   sectioned(rows, draw, t, collapsed) {
     for (const r of rows) this.rowsById[r.w.id] = r;
+    this.claimPending(rows);
     const ctx = this.folderCtx();
     const secs = C.sections(rows, ctx);
-    if (collapsed || !C.needsHeaders(secs)) return secs.flatMap((sec) => sec.rows.map(draw));
+    if (!C.needsHeaders(secs)) return secs.flatMap((sec) => sec.rows.map(draw));
     const folded = shared("crest.folded") ?? [];
     const names = secs.filter((sec) => sec.name !== null).map((sec) => sec.name);
     const overrides = { ...(shared("crest.colors") ?? {}) };
@@ -519,6 +554,17 @@ export default class Spaces extends View {
     return secs.flatMap((sec) => {
       if (sec.name === null) return sec.rows.map(draw);
       const shut = folded.includes(sec.name);
+      if (collapsed) {
+        const compactColor = colors[sec.name];
+        const compactLabel = sec.kind === "manual" ? sec.name : C.folderLabel(sec.name, { renamed: shared("crest.names") ?? {}, labels: shared("crest.labels") ?? {} });
+        const st = this.cfg.dot ? C.topStatus(C.summarize(sec.rows)) : null;
+        const head = U.compactFolder({
+          t, key: sec.name, label: `${compactLabel} (${sec.tops.length})`, color: compactColor, shut, status: st,
+          onClick: (_e, cx) => { setShared("crest.folded", C.toggleFold(folded, sec.name, names, false)); cx.notify(); },
+          onMenu: () => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 380, props: { crestMenu: true, kind: "folder", name: sec.name, label: compactLabel, color: compactColor, manual: sec.kind === "manual", names, members: sec.tops.map((r) => C.memberKey(r)) } }),
+        });
+        return [head, ...(shut ? [] : sec.rows.map(draw))];
+      }
       const pics = C.stackOf(sec.tops, (r) => this.iconFor(r.g), 3);
       const more = Math.max(0, sec.tops.length - pics.length);
       const status = this.cfg.dot ? C.topStatus(C.summarize(sec.rows)) : null;
@@ -528,6 +574,9 @@ export default class Spaces extends View {
       const head = U.folderHeader({
         t, key: sec.name, label, color, count: sec.tops.length, shut, status, icons: pics, more,
         hot: dragging && this.dropOver === sec.name,
+        hovered: !dragging && this.folderDrag == null && this.hover === `folder:${sec.name}`,
+        onHover: (on, cx) => this.setHover(`folder:${sec.name}`, on, cx),
+        onAdd: () => this.quickAdd(sec, label, secs),
         landing: movingFolder && this.folderOver === sec.name && this.folderDrag !== sec.name,
         onClick: (e, cx) => {
           if (dragging || this.skipClick) { this.skipClick = false; return; }
@@ -560,7 +609,7 @@ export default class Spaces extends View {
       });
       const body = shut ? [] : sec.rows.length ? sec.rows.map(draw) : [U.emptyHint(t, sec.name)];
       return [head, ...body];
-    }).concat(this.endZone(t, secs, names, dragging));
+    }).concat(collapsed ? [] : [this.endZone(t, secs, names, dragging)]);
   }
 
   // Below the last folder: folders dropped here go last; spaces dropped here join the last folder, at its end.
@@ -667,6 +716,7 @@ export default class Spaces extends View {
         cx.notify();
       })
       .on_mouse_down("right", () => this.menu(w))
+      .on_hover((on, cx) => this.setHover(`row:${w.id}`, on, cx))
       .child(
         h_flex()
           .gap(9)
@@ -674,7 +724,11 @@ export default class Spaces extends View {
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)))
           .when(!tree, el => el.child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && (["blocked", "done"].includes(w.status) || (w.status === "working" && this.cfg.agents === "none")) ? w.status : null })))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t, key) : div().flex_1()),
+          .child(this.hover === `row:${w.id}` && this.pressed === null
+            ? h_flex().flex_1().justify_end().gap(2)
+              .child(U.iconButton({ t, id: `crest-new-${w.id}`, icon: "plus", tip: "New terminal or agent here", onClick: () => this.quickNew(w) }))
+              .child(U.iconButton({ t, id: `crest-close-${w.id}`, icon: "x", tip: "Close space", onClick: () => run("space.close", { id: w.id }) }))
+            : g ? this.gitTail(g, tree, w.name, t, key) : div().flex_1()),
       );
   }
 
@@ -684,7 +738,7 @@ export default class Spaces extends View {
     const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
     return h_flex()
       .id(`space-${w.id}`)
-      .h(tree ? 28 : 34)
+      .h(tree ? 22 : 34)
       .flex_none()
       .justify_center()
       .items_center()
@@ -694,7 +748,7 @@ export default class Spaces extends View {
       .on_click(() => run("space.select", { id: w.id }))
       .on_mouse_down("right", () => this.menu(w))
       .child(tree
-        ? svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)
+        ? svg("mods/workspace-chrome/branch.svg").size(11).text_color(fill).opacity(0.8)
         : U.tile({ t, size: 22, radius: Math.min(this.cfg.radius, 11), icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && ["blocked", "done", "working"].includes(w.status) ? w.status : null }));
   }
 
@@ -716,7 +770,11 @@ export default class Spaces extends View {
     if (changed) setShared("space.colors", kept);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
-        .when(!collapsed, el => el.child("Spaces"))
+        .when(!collapsed, el => el.child(div().flex_1().child("Spaces")))
+        .when(!collapsed, el => el.child(div().id("crest-folder-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).tooltip("New folder")
+          .hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_click(() => openOverlay({ mod: "crest", kind: "popup", width: 240, height: 140, props: { crestMenu: true, kind: "newfolder" } }))
+          .child(svg("mods/workspace-chrome/folder-plus.svg").size(14))))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode("always")

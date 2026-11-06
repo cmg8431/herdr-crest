@@ -1,0 +1,4 @@
+mods/crest/gpui-kit.d.ts
+mods/crest/jsconfig.json
+node_modules/
+.DS_Store
