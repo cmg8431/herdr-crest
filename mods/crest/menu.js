@@ -16,6 +16,8 @@ async function openSettings() {
   await exec("sh", ["-c", '[ -f "$1" ] || printf "%s\\n" "$2" > "$1"; open -t "$1" 2>/dev/null || xdg-open "$1"', "sh", path, seed]).catch(() => null);
 }
 
+const DANGER = { danger: true };
+
 function spaceItems(p) {
   const list = [];
   list.push([p.pinned ? "Unpin" : "Pin to top", p.pinned ? "pin-off" : "pin", () => {
@@ -23,29 +25,30 @@ function spaceItems(p) {
     p.pinned ? pins.delete(p.key) : pins.add(p.key);
     setShared("crest.pinned", [...pins]);
   }]);
-  for (const name of p.folders ?? []) {
-    if (name === p.folder) continue;
-    list.push([`Move to ${name}`, "folder", () => {
-      const next = moveToFolder({ manual: folders(), loose: shared("crest.loose") ?? [] }, p.key, name);
-      setShared("crest.folders", next.manual);
-      setShared("crest.loose", next.loose);
-    }]);
-  }
+  list.push(["Move to folder…", "folder", "mode:move"]);
+  list.push(["—"]);
+  if (p.git) list.push(["New worktree…", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: p.id, action: "new" } })]);
+  if (p.git) list.push(["Open worktree…", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: p.id, action: "open" } })]);
+  list.push(["Rename…", "square-pen", () => run("space.rename", { id: p.id })]);
+  list.push(["Crest settings…", "settings", () => openSettings()]);
+  list.push(["—"]);
+  if (p.git === "linked") list.push(["Remove worktree…", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: p.id, action: "remove" } }), null, DANGER]);
+  list.push(["Close space", "x", () => run("space.close", { id: p.id }), null, DANGER]);
+  return list;
+}
+
+// "Move to folder…": every folder, the current one checked, plus a new one or none.
+function moveItems(p) {
+  const move = (to) => () => {
+    const next = moveToFolder({ manual: folders(), loose: shared("crest.loose") ?? [] }, p.key, to);
+    setShared("crest.folders", next.manual);
+    setShared("crest.loose", next.loose);
+  };
+  const list = (p.allFolders ?? []).map((f) => [f.label, `folder:${f.color}`, move(f.key), null, f.key === p.folder ? { checked: true } : null]);
+  if (list.length) list.push(["—"]);
   list.push(["New folder…", "folder-plus", "input:new"]);
-  if (p.folder) list.push(["Take out of folder", "minus", () => {
-    if (p.mine) setShared("crest.folders", assign(folders(), p.key, null));
-    else setShared("crest.loose", [...new Set([...(shared("crest.loose") ?? []), p.key])]);
-  }]);
+  list.push(["No folder", "minus", move(null), null, p.folder ? null : { checked: true }]);
   if (p.hidden) list.push(["Show removed folders", "layers", () => setShared("crest.hidden", [])]);
-  list.push(["—"]);
-  if (p.git) {
-    list.push(["New worktree", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: p.id, action: "new" } })]);
-    list.push(["Open worktree", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 560, height: 480, props: { space: p.id, action: "open" } })]);
-  }
-  if (p.git === "linked") list.push(["Remove worktree", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: p.id, action: "remove" } })]);
-  list.push(["Rename", "square-pen", () => run("space.rename", { id: p.id })]);
-  list.push(["—"]);
-  list.push(["Close", "x", () => run("space.close", { id: p.id })]);
   return list;
 }
 
@@ -78,28 +81,33 @@ function addItems(p) {
 
 function folderItems(p) {
   const names = p.names ?? [];
-  const i = names.indexOf(p.name);
+  const folded = shared("crest.folded") ?? [];
+  const othersOpen = names.some((n) => n !== p.name && !folded.includes(n));
   const list = [];
   list.push(["Rename…", "square-pen", "input:rename"]);
   list.push(["colors"]);
-  if (i > 0) list.push(["Move up", "chevron-up", () => setShared("crest.order", stepFolder(names, p.name, -1))]);
-  if (i !== -1 && i < names.length - 1) list.push(["Move down", "chevron-down", () => setShared("crest.order", stepFolder(names, p.name, 1))]);
+  if (names.length > 1) list.push(["order"]);
+  list.push(othersOpen
+    ? ["Fold the others", "layers", () => setShared("crest.folded", names.filter((n) => n !== p.name))]
+    : ["Open all folders", "layers", () => setShared("crest.folded", [])]);
   list.push(["—"]);
-  list.push(["Fold the others", "layers", () => setShared("crest.folded", names.filter((n) => n !== p.name))]);
-  list.push(["Unfold all", "layers", () => setShared("crest.folded", [])]);
-  list.push(["—"]);
-  list.push(["Settings…", "settings", () => openSettings()]);
   list.push(["Remove folder", "x", () => {
     const next = removeFolder({ manual: folders(), hidden: shared("crest.hidden") ?? [] }, p.name);
     setShared("crest.folders", next.manual);
     setShared("crest.hidden", next.hidden);
     setShared("crest.folded", (shared("crest.folded") ?? []).filter((n) => n !== p.name));
-  }]);
+  }, null, DANGER]);
   return list;
 }
 
 // The left cell of a menu row: a theme icon, a program's icon, a space's picture, or its letter.
 function cell(t, spec) {
+  if (spec.startsWith("folder:")) {
+    const color = spec.slice(7);
+    return div().relative().size(16).flex_none()
+      .child(svg("mods/crest/icons/folder-back.svg").size(16).absolute().left(0).top(0).text_color(color).opacity(0.5))
+      .child(svg("mods/crest/icons/folder-front.svg").size(16).absolute().left(0).top(0).text_color(color));
+  }
   if (spec.startsWith("pic:")) return h_flex().size(16).flex_none().rounded(5).overflow_hidden().child(image(spec.slice(4)).size(16).rounded(5));
   if (spec.startsWith("letter:")) {
     const [, letter, fill] = spec.split(":");
@@ -162,6 +170,7 @@ export class Menu {
   choose(it, cx) {
     const action = it[2];
     if (typeof action === "string" && action.startsWith("input:")) return this.openInput(action.slice(6), cx);
+    if (action === "mode:move") { this.mode = "move"; this.at = 0; cx.notify(); return; }
     if (props()?.kind === "add" && it[3]) {
       // Adding spaces: stay open so several can go in, mark the ones done.
       if (!this.added.has(it[3])) { action?.(); this.added.add(it[3]); }
@@ -182,11 +191,11 @@ export class Menu {
   render() {
     const t = theme();
     const p = props() ?? {};
-    const list = p.kind === "folder" ? folderItems(p) : p.kind === "new" ? newItems(p, this.agents) : p.kind === "add" ? addItems(p) : spaceItems(p);
-    const real = list.filter((it) => it[0] !== "—" && it[0] !== "colors");
+    const list = this.mode === "move" ? moveItems(p) : p.kind === "folder" ? folderItems(p) : p.kind === "new" ? newItems(p, this.agents) : p.kind === "add" ? addItems(p) : spaceItems(p);
+    const real = list.filter((it) => !["—", "colors", "order"].includes(it[0]));
     const box = v_flex().id("crest-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
       .on_key_down((e, cx) => {
-        if (this.mode) { if (e.key === "escape") closeOverlay(p.overlay); return; }
+        if (this.mode && this.mode !== "move") { if (e.key === "escape") closeOverlay(p.overlay); return; }
         if (e.key === "down") this.at = (this.at + 1) % real.length;
         else if (e.key === "up") this.at = (this.at + real.length - 1) % real.length;
         else if (e.key === "enter") this.choose(real[this.at], cx);
@@ -195,7 +204,7 @@ export class Menu {
         cx.notify();
       });
 
-    if (this.mode) {
+    if (this.mode && this.mode !== "move") {
       return box.p(10).gap(8)
         .child(div().text_size(11.5).text_color(t.dim).child(this.mode === "new" ? "New folder" : "Rename folder"))
         .child(Input.new(this.input).h(32).px(9).rounded(8).border_1().border_color(t.accent).bg(t.background).text_size(12.8).text_color(t.foreground))
@@ -203,24 +212,39 @@ export class Menu {
     }
 
     const current = p.color ?? hashColor(p.name ?? "");
-    const heading = p.kind === "add" ? `Add to ${p.label ?? p.name}` : p.kind === "new" ? `New in ${p.spaceName ?? "this space"}` : null;
+    const heading = this.mode === "move" ? "Move to folder" : p.kind === "add" ? `Add to ${p.label ?? p.name}` : p.kind === "new" ? `New in ${p.spaceName ?? "this space"}` : null;
     return box.when(Boolean(heading), (el) => el.child(div().px(8).pt(4).pb(6).text_size(11).text_color(t.dim).child(heading))).children(list.map((it, i) => {
       if (it[0] === "—") return div().mx(7).my(4).h(1).bg(t.border);
       if (it[0] === "colors") {
-        return h_flex().px(8).py(6).gap(6).flex_wrap()
-          .children(PALETTE.map((c) => div().id(`crest-c-${c}`).size(16).rounded(5).bg(c).cursor_pointer()
+        return h_flex().px(8).py(7).gap(5).justify_between()
+          .children(PALETTE.map((c) => div().id(`crest-c-${c}`).size(14).flex_none().rounded(7).bg(c).cursor_pointer()
             .when(c === current, (el) => el.border(2).border_color(t.foreground))
-            .hover((s) => s.opacity(0.8))
+            .hover((s) => s.opacity(0.75))
             .on_click(() => { this.setColor(c); closeOverlay(p.overlay); })));
       }
+      if (it[0] === "order") {
+        const names = p.names ?? [];
+        const at = names.indexOf(p.name);
+        const step = (dir) => () => { setShared("crest.order", stepFolder(names, p.name, dir)); closeOverlay(p.overlay); };
+        const arrow = (id, icon, ok, dir) => h_flex().id(id).size(24).rounded(6).items_center().justify_center()
+          .when(ok, (el) => el.cursor_pointer().text_color(t.foreground).hover((s) => s.bg(t.hover)).on_click(step(dir)))
+          .when(!ok, (el) => el.text_color(t.dim).opacity(0.4))
+          .child(svg(ICON(icon)).size(14));
+        return h_flex().h(30).px(8).gap(9).items_center().text_color(t.foreground)
+          .child(svg(ICON("layers")).size(14).flex_none().text_color(t.muted))
+          .child(div().flex_1().child("Move"))
+          .child(arrow("crest-up", "chevron-up", at > 0, -1))
+          .child(arrow("crest-down", "chevron-down", at !== -1 && at < names.length - 1, 1));
+      }
       const k = real.indexOf(it);
-      return h_flex().id(`crest-mi-${i}`).h(30).px(8).gap(9).rounded(7).items_center().text_color(t.foreground)
+      const flags = it[4] ?? {};
+      return h_flex().id(`crest-mi-${i}`).h(30).px(8).gap(9).rounded(7).items_center().text_color(flags.danger ? (t.blocked ?? t.ansi1) : t.foreground)
         .when(k === this.at, (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => this.choose(it, cx))
-        .child(cell(t, it[1]))
+        .child(flags.danger ? svg(ICON(it[1])).size(14).flex_none() : cell(t, it[1]))
         .child(div().flex_1().truncate().child(it[0]))
-        .when(Boolean(it[3]) && this.added.has(it[3]), (el) => el.child(svg(ICON("check")).size(13).flex_none().text_color(t.done ?? t.ansi2)));
+        .when((Boolean(it[3]) && this.added.has(it[3])) || Boolean(flags.checked), (el) => el.child(svg(ICON("check")).size(13).flex_none().text_color(t.done ?? t.ansi2)));
     }));
   }
 }

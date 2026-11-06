@@ -287,6 +287,7 @@ export default class Spaces extends View {
       crestMenu: true, kind: "space", id: w.id, key, folder: inFolder ?? null, folders: Object.keys(manual),
       pinned: Boolean(key && (shared("crest.pinned") ?? []).includes(key)), git: row?.g ? (row.g.linked ? "linked" : "main") : null,
       hidden: (shared("crest.hidden") ?? []).length,
+      allFolders: this.lastFolders ?? [],
     } });
   }
 
@@ -550,6 +551,8 @@ export default class Spaces extends View {
     const overrides = { ...(shared("crest.colors") ?? {}) };
     for (const [n, f] of Object.entries(ctx.manual)) if (f.color) overrides[n] = f.color;
     const colors = C.folderColors(names, overrides);
+    const labelOf = (sec) => (sec.kind === "manual" ? sec.name : C.folderLabel(sec.name, { renamed: shared("crest.names") ?? {}, labels: shared("crest.labels") ?? {} }));
+    this.lastFolders = secs.filter((x) => x.name !== null).map((x) => ({ key: x.name, label: labelOf(x), color: colors[x.name] }));
     const dragging = this.pressed !== null;
     return secs.flatMap((sec) => {
       if (sec.name === null) return sec.rows.map(draw);
@@ -563,7 +566,7 @@ export default class Spaces extends View {
           onClick: (_e, cx) => { setShared("crest.folded", C.toggleFold(folded, sec.name, names, false)); cx.notify(); },
           onMenu: () => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 380, props: { crestMenu: true, kind: "folder", name: sec.name, label: compactLabel, color: compactColor, manual: sec.kind === "manual", names, members: sec.tops.map((r) => C.memberKey(r)) } }),
         });
-        return [head, ...(shut ? [] : sec.rows.map(draw))];
+        return [U.compactGroup(t, sec.name, head, shut ? [] : sec.rows.map(draw))];
       }
       const pics = C.stackOf(sec.tops, (r) => this.iconFor(r.g), 3);
       const more = Math.max(0, sec.tops.length - pics.length);
@@ -736,20 +739,24 @@ export default class Spaces extends View {
   compact({ w, g, tree }, t) {
     const colors = shared("space.colors") ?? {};
     const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
+    const face = tree
+      ? svg("mods/workspace-chrome/branch.svg").size(11).text_color(fill).opacity(0.85)
+      : U.tile({ t, size: 24, radius: Math.min(this.cfg.radius, 12), icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && ["blocked", "done", "working"].includes(w.status) ? w.status : null });
+    // Only the tile is highlighted, so the column reads as icons, not as stretched rows.
     return h_flex()
       .id(`space-${w.id}`)
-      .h(tree ? 22 : 34)
+      .h(tree ? 22 : 36)
+      .w_full()
       .flex_none()
       .justify_center()
       .items_center()
-      .rounded(8)
-      .when(w.active, (el) => el.bg(t.selected))
-      .hover((s) => s.bg(t.hover))
+      .tooltip(w.name)
       .on_click(() => run("space.select", { id: w.id }))
       .on_mouse_down("right", () => this.menu(w))
-      .child(tree
-        ? svg("mods/workspace-chrome/branch.svg").size(11).text_color(fill).opacity(0.8)
-        : U.tile({ t, size: 22, radius: Math.min(this.cfg.radius, 11), icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && ["blocked", "done", "working"].includes(w.status) ? w.status : null }));
+      .child(h_flex().size(tree ? 22 : 32).flex_none().rounded(tree ? 6 : 9).items_center().justify_center()
+        .when(w.active, (el) => el.bg(t.selected))
+        .hover((s) => s.bg(t.hover))
+        .child(face));
   }
 
   render() {

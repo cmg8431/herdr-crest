@@ -152,11 +152,19 @@ export function iconButton({ t, id, icon, tip, onClick }) {
 
 /** A folder in the narrow sidebar: its glyph, centered; the name on hover; a dot when shut and an agent there needs you. */
 export function compactFolder({ t, key, label, color, shut, status, onClick, onMenu }) {
-  return h_flex().id(`crest-cfolder-${key}`).h(26).mt(6).flex_none().justify_center().items_center().rounded(7).relative()
+  return h_flex().id(`crest-cfolder-${key}`).h(26).w_full().flex_none().justify_center().items_center().rounded(7).relative()
     .tooltip(label)
     .hover((s) => s.bg(t.hover))
     .on_click(onClick)
     .on_mouse_down("right", onMenu)
     .child(folderGlyph(color, shut))
     .when(shut && Boolean(status), (el) => el.child(pulse(div().absolute().right(10).top(5).size(6).rounded(3).bg(statusColor(t, status)), status)));
+}
+
+/** A folder in the narrow sidebar: a rounded column holding its glyph and its spaces, so the group is visible. */
+export function compactGroup(t, key, head, members) {
+  return h_flex().id(`crest-cgroup-${key}`).mt(6).flex_none().justify_center()
+    .child(v_flex().w(44).flex_none().py(3).gap(1).items_center().rounded(12).bg(t.surface ?? t.raised ?? t.hover)
+      .child(head)
+      .children(members));
 }

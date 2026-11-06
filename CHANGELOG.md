@@ -6,6 +6,8 @@
 - New folder button at the top of the list.
 - Narrow sidebar: folders show as their glyph and fold; worktree rows are smaller.
 - Cover sized for the herdr.dev gallery card.
+- Simpler menus: folder menu with one-line colors, an inline Move row and a red Remove; space menu with one "Move to folder…" list and settings at the end.
+- Narrow sidebar: each folder is a rounded column; only the tile is highlighted.
 
 ## 0.2.0 - 2026-11-06
 
