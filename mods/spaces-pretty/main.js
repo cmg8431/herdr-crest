@@ -382,13 +382,13 @@ export default class Spaces extends View {
 
   // Round avatar with a colored ring; a status dot on its corner when an agent works, waits or finishes.
   avatar(w, g, fill, t) {
-    const live = ["working", "blocked", "done"].includes(w.status);
+    const live = ["blocked", "done"].includes(w.status);
     const face = g?.owner
-      ? h_flex().size(24).flex_none().rounded(12).overflow_hidden().child(image(`avatars/${g.owner}.png`).size(24))
-      : h_flex().size(24).flex_none().rounded(12).bg(fill).items_center().justify_center().text_size(12).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
-    return div().relative().size(28).flex_none().rounded(14).border(2).border_color(fill).items_center().justify_center()
+      ? h_flex().size(22).flex_none().rounded(11).overflow_hidden().child(image(`avatars/${g.owner}.png`).size(22).rounded(11))
+      : h_flex().size(22).flex_none().rounded(11).bg(fill).items_center().justify_center().text_size(11).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
+    return div().relative().size(26).flex_none().rounded(13).border(1).border_color(fill).items_center().justify_center()
       .child(face)
-      .when(live, (el) => el.child(div().absolute().right(-3).bottom(-3).size(10).rounded(5).bg(tone(t, w.status)).border(2).border_color(t.chrome ?? t.background)));
+      .when(live, (el) => el.child(div().absolute().right(-2).bottom(-2).size(8).rounded(4).bg(tone(t, w.status)).border(1.5).border_color(t.chrome ?? t.background)));
   }
 
   row({ w, i, g, tree }, t) {
