@@ -3,7 +3,7 @@
 # Saves the owner's picture to <herdr home>/avatars/. Silent on failure (the mod falls back to a letter).
 host="$1"; owner="$2"
 case "$owner" in *[!A-Za-z0-9._-]*|"") exit 0 ;; esac
-dir="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/avatars"
+dir="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/crest-cache"
 name="$owner"; [ "$host" = "github.com" ] || name="${host}__${owner}"
 f="$dir/$name.png"
 mkdir -p "$dir"

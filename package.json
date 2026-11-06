@@ -1,0 +1,10 @@
+{
+  "name": "herdr-crest",
+  "private": true,
+  "type": "module",
+  "description": "Crest: faces and folders for your Herdr spaces",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test"
+  }
+}

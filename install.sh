@@ -1,24 +1,24 @@
 #!/bin/sh
-# Install spaces-pretty into your Herdr and switch to a cloned layout that uses it.
-# Never touches shipped mods or layouts: it adds mods/spaces-pretty and layouts/pretty.json.
+# Install crest into Herdr: copy the mod, then use it in a layout cloned from yours.
+# Shipped mods and layouts are never changed, so Herdr updates leave crest alone.
 set -eu
-HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
+APP="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BASE="${1:-main}"
 
-mkdir -p "$HOME_DIR/mods"
-rm -rf "$HOME_DIR/mods/spaces-pretty"
-cp -R "$HERE/mods/spaces-pretty" "$HOME_DIR/mods/spaces-pretty"
-herdr-app check "$HOME_DIR/mods/spaces-pretty"
+command -v herdr-app >/dev/null 2>&1 || { echo "herdr-app not found. Open Herdr once, then run this again." >&2; exit 1; }
 
-if [ ! -f "$HOME_DIR/layouts/pretty.json" ]; then
-  herdr-app do layout.clone "{\"name\":\"$BASE\",\"as\":\"pretty\"}" >/dev/null
+mkdir -p "$APP/mods"
+rm -rf "$APP/mods/crest"
+cp -R "$HERE/mods/crest" "$APP/mods/crest"
+herdr-app check "$APP/mods/crest"
+
+if [ ! -f "$APP/layouts/crest.json" ]; then
+  herdr-app do layout.clone "{\"name\":\"$BASE\",\"as\":\"crest\"}" >/dev/null
 fi
-python3 - "$HOME_DIR/layouts/pretty.json" <<'PY'
-import sys
-p = sys.argv[1]
-s = open(p).read().replace('"mod": "spaces"', '"mod": "spaces-pretty"')
-open(p, "w").write(s)
-PY
-herdr-app do layout.switch '{"name":"pretty"}' >/dev/null
-echo "spaces-pretty installed. Switch layouts with Cmd+Shift+L."
+# Point the cloned layout's spaces list at crest.
+sed 's/"mod": "spaces"/"mod": "crest"/' "$APP/layouts/crest.json" > "$APP/layouts/crest.json.tmp"
+mv "$APP/layouts/crest.json.tmp" "$APP/layouts/crest.json"
+herdr-app do layout.switch '{"name":"crest"}' >/dev/null
+
+echo "crest is installed. Cmd+Shift+L switches layouts; your old one is still there."

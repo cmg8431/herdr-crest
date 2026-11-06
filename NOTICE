@@ -1,3 +1,7 @@
-spaces-pretty is a modified copy of the "spaces" mod shipped with Herdr
+Crest
+Copyright 2026 cmg8431
+
+mods/crest/main.js is a modified copy of the "spaces" mod shipped with Herdr
 (https://herdr.dev), version 0.1.13, licensed under the Apache License 2.0.
-Changes: round avatar with a repo-colored ring, GitHub owner picture as avatar, status dot, repo-tinted branch icon.
+Changes: icons, folders, lines under spaces, git and pull request marks, and a
+right-click menu, wired in through crest.js, ui.js and menu.js.

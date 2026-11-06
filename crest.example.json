@@ -1,0 +1,18 @@
+{
+  "group": "owner",
+  "icon": "auto",
+  "size": 24,
+  "radius": 8,
+  "dot": true,
+  "pr": true,
+  "dirty": true,
+  "agents": "active",
+  "programs": false,
+  "folders": {
+    "Work": ["my-company"],
+    "Side projects": ["blog", "dotfiles", "exp-*"]
+  },
+  "icons": {
+    "my-repo": "/absolute/path/to/icon.png"
+  }
+}

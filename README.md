@@ -1,94 +1,71 @@
-<div align="center">
+<img src="preview.png" alt="Crest" width="100%">
 
-<img src="assets/logo.svg" alt="spaces-pretty" width="96">
+# Crest
 
-# spaces-pretty
+A Spaces sidebar for [Herdr](https://herdr.dev). Each space shows its project's icon, and spaces sit in folders.
 
-**A Spaces sidebar for [Herdr](https://herdr.dev) that shows who owns what.**
-
+[![ci](https://github.com/cmg8431/herdr-crest/actions/workflows/ci.yml/badge.svg)](https://github.com/cmg8431/herdr-crest/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![herdr mod](https://img.shields.io/badge/herdr-mod-6366f1.svg)](https://herdr.dev/mods)
-[![platform](https://img.shields.io/badge/tested-macOS-lightgrey.svg)](#)
-
-<img src="assets/demo.gif" alt="spaces-pretty in dark and light mode" width="420">
-
-</div>
-
-When you run a dozen agents across a dozen repos, the sidebar turns into a wall of identical letter tiles. spaces-pretty gives every space a face.
+[![herdr mod](https://img.shields.io/badge/herdr-mod-5b8def.svg)](https://herdr.dev/mods)
 
 <table>
 <tr>
-<td align="center"><b>Dark</b><br><img src="assets/preview-dark.png" width="360" alt="dark"></td>
-<td align="center"><b>Light</b><br><img src="assets/preview-light.png" width="360" alt="light"></td>
+<td><img src="assets/sidebar-dark.png" width="380" alt="Crest, dark"></td>
+<td valign="top"><img src="assets/sidebar-light.png" width="380" alt="Crest, light, folders closed"></td>
 </tr>
 </table>
 
-## What you get
+## What it does
 
-- **The owner's picture as the icon.** The org logo or user photo of the repo's `origin`. Works for GitHub, GitLab, Codeberg and Bitbucket.
-- **Softly rounded tiles.** 24px with 8px corners, no frame. Pictures are clipped to the same shape.
-- **One color per repo.** Letter tiles and worktree branch icons share it, so a repo and its worktrees read as one family (see `caddy` above).
-- **Status dot.** A small dot when an agent in that space is blocked or done.
-- **Safe fallback.** No supported remote (see `notes` above)? You get a clean colored letter.
-- **Yours still wins.** Colors you set yourself (`space.colors`) override the automatic one.
+- **Icons.** The project's own icon if the repo has one (favicon, app icon, logo), else the owner's picture from GitHub, GitLab, Codeberg or Bitbucket, else a letter.
+- **Folders.** Spaces are grouped by owner from the start, named after the owner (`caddyserver` shows as Caddy). Make your own folders, drag spaces in and out, drag folders to reorder, rename them, pick a color, close them. A closed folder still shows who is inside and whether an agent there needs you.
+- **What's running.** Under a space, its busy agents (and, if you want, dev servers). Click one to jump to it.
+- **Git at a glance.** Branch, ahead and behind, a dot for uncommitted changes, and the pull request number in its state's color. Click the number to open it.
+- **Pin** a space to keep it at the top.
+
+Right-click a space or a folder for everything else. Alt+click a folder to keep only that one open.
 
 ## Install
 
 ```sh
-git clone https://github.com/cmg8431/herdr-spaces-pretty
-cd herdr-spaces-pretty
+git clone https://github.com/cmg8431/herdr-crest
+cd herdr-crest
 ./install.sh
 ```
 
-`install.sh` copies the mod, clones your `main` layout as `pretty`, points it at `spaces-pretty`, and switches to it. Shipped mods and layouts are never modified, so Herdr updates will not overwrite it. Run `./install.sh <layout>` to base it on another layout.
-
-Manual install: copy `mods/spaces-pretty/` to `~/.config/herdr-app/mods/` and change `"mod": "spaces"` to `"mod": "spaces-pretty"` in a layout you cloned.
+This copies the mod into `~/.config/herdr-app/mods/crest`, clones your `main` layout as `crest` with the spaces list swapped for Crest, and switches to it. Shipped mods and layouts are not touched, so Herdr updates won't overwrite it. `Cmd+Shift+L` switches back. To use another layout as the base: `./install.sh <layout>`.
 
 ## Settings
 
-Optional. Create `~/.config/herdr-app/spaces-pretty.json`:
+Optional. Right-click a folder, then **Settings…**, or create `~/.config/herdr-app/crest.json`. Everything has a default; see [crest.example.json](crest.example.json).
 
-```json
-{ "size": 24, "radius": 8, "dot": true }
-```
-
-| key | default | meaning |
+| key | default | |
 | --- | --- | --- |
-| `size` | `24` | tile size in px |
-| `radius` | `8` | corner radius; `size / 2` makes a circle, `0` a square |
-| `dot` | `true` | show the blocked/done status dot |
+| `group` | `"owner"` | `"owner"` groups by owner, `"none"` only uses your folders |
+| `icon` | `"auto"` | `"auto"` project then owner, `"project"`, `"owner"`, `"letter"` |
+| `size`, `radius` | `24`, `8` | tile size and corner radius in px |
+| `dot` | `true` | blocked and done dot on the tile |
+| `pr` | `true` | pull request number (needs `gh`) |
+| `dirty` | `true` | dot for uncommitted changes |
+| `agents` | `"active"` | agents under a space: `"active"`, `"all"`, `"none"` |
+| `programs` | `false` | also list running programs such as dev servers |
+| `folders` | `{}` | folders by rule: owner, repo name, or a name prefix like `"exp-*"` |
+| `icons` | `{}` | your own picture for a repo: `{ "repo": "/path/icon.png" }` |
 
-Unknown keys are ignored. Edit and re-open the layout to apply.
+Re-open the layout after editing (`Cmd+Shift+L` twice).
 
-## Supported hosts
+## What it runs
 
-| Host | Picture comes from |
-| --- | --- |
-| github.com | `github.com/<owner>.png` |
-| gitlab.com | GitLab API, group first, then user |
-| codeberg.org | `codeberg.org/<owner>.png` |
-| bitbucket.org | `bitbucket.org/account/<owner>/avatar/` |
+Per space, locally: `git status`, `git config --get remote.origin.url`, `git ls-files` (to find a project icon).
+Once per owner: `curl` to the git host for the owner's picture, and to `api.github.com/users/<owner>` for the folder name.
+Per branch with `pr` on, at most every 5 minutes: `gh pr view`. Pictures are cached in `~/.config/herdr-app/crest-cache/`. Nothing else leaves your machine.
 
-Anything else, including self-hosted servers, keeps the colored letter.
+## Development
 
-## What it runs and fetches
+`mods/crest/crest.js` holds the logic and has no Herdr imports; `node --test` runs its tests. `ui.js` draws, `menu.js` is the right-click menu, `main.js` is Herdr's own `spaces` mod with crest wired in. Check a change with `herdr-app check mods/crest`.
 
-Nothing hidden:
-
-- `git config --get remote.origin.url` in each space's folder, to find the owner.
-- [`fetch-avatar.sh`](mods/spaces-pretty/fetch-avatar.sh) runs `curl` against the host above, once per owner, and saves to `~/.config/herdr-app/avatars/`. Pictures are refreshed after 7 days.
-
-No tokens, no other hosts, no telemetry.
-
-## Limits
-
-- Tested on macOS only.
-- `image()` in Herdr mods loads local files only, which is why pictures are downloaded first. A new space shows its letter for a few seconds until the picture arrives.
-
-## How it is built
-
-A clone of Herdr's shipped `spaces` mod (`mod.clone`), with the avatar drawing in `row()` and `check()` changed. See [RECIPE.md](RECIPE.md) to rebuild it from scratch.
+Tested on macOS.
 
 ## License
 
-Apache-2.0. Based on Herdr's `spaces` mod, see [NOTICE](NOTICE).
+Apache-2.0. `main.js` is based on Herdr's `spaces` mod, see [NOTICE](NOTICE).

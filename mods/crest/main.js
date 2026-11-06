@@ -3,9 +3,15 @@
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
-import { View, div, svg, image } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile } from "herdr";
+import { spaces, machines, panes, agents, run, openOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile } from "herdr";
+import * as C from "./crest.js";
+import * as U from "./ui.js";
+import { Menu } from "./menu.js";
+
+const CACHE = "crest-cache"; // under the Herdr home, where image() can read
+const PR_TTL = 5 * 60 * 1000;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -46,16 +52,28 @@ export function tone(t, status) {
 }
 
 // Same repo, same color: hash the repo (or the space) into a soft palette.
-const PRETTY = ["#6366f1", "#14b8a6", "#f59e0b", "#ec4899", "#22c55e", "#0ea5e9", "#a855f7", "#ef4444", "#84cc16", "#f97316"];
-const pretty = (key) => { let h = 0; for (const c of String(key)) h = (h * 31 + c.codePointAt(0)) >>> 0; return PRETTY[h % PRETTY.length]; };
 
 export default class Spaces extends View {
   init(_props, cx) {
-    // Optional ~/.config/herdr-app/spaces-pretty.json: { "size": 24, "radius": 8, "dot": true }
-    this.cfg = { size: 24, radius: 8, dot: true };
-    readTextFile(`${appHome()}/spaces-pretty.json`).then((raw) => {
-      try { const c = JSON.parse(raw ?? "{}"); this.cfg = { ...this.cfg, ...Object.fromEntries(Object.entries(c).filter(([k]) => k in this.cfg)) }; cx.notify(); } catch { /* keep defaults */ }
-    }).catch(() => null);
+    // Opened as crest's own right-click menu: draw only that.
+    if (props()?.crestMenu) { this.popup = new Menu(cx); return; }
+    // Optional ~/.config/herdr-app/crest.json (see README). Read once per layout load.
+    this.cfg = C.normalizeConfig(null);
+    (async () => {
+      const raw = (await readTextFile(`${appHome()}/crest.json`).catch(() => null)) ?? (await readTextFile(`${appHome()}/spaces-pretty.json`).catch(() => null));
+      try { this.cfg = C.normalizeConfig(JSON.parse(raw ?? "null")); } catch { /* keep defaults */ }
+      cx.notify();
+    })();
+    this.prs = {}; // where() -> { pr, at }
+    this.icons = {}; // repo top -> project icon path under CACHE ("" when none)
+    this.rowsById = {}; // space id -> its row, for drops on folder headers
+    this.dropOver = null; // folder name under a dragged space
+    this.folderDrag = null; // folder whose header is being dragged
+    this.folderOver = null;
+    this.folderMoved = false;
+    this.skipClick = false;
+    this.since = {}; // agent address -> { status, at }: how long it has been doing that
+    exec("mkdir", ["-p", `${appHome()}/${CACHE}`]).catch(() => null);
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
@@ -195,6 +213,7 @@ export default class Spaces extends View {
         this.pending.clear();
         for (const key of keys) await this.check(key, cx);
       }
+      await this.refreshPrs(cx).catch(() => null);
       const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
       for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
       this.refreshing = false;
@@ -231,16 +250,9 @@ export default class Spaces extends View {
           info.behind = Math.abs(parseInt(b, 10)) || 0;
         }
       }
-      // Who owns the repo (GitHub, GitLab, Codeberg, Bitbucket) from origin, for its picture.
-      if (!on) {
-        const rem = await exec("git", ["config", "--get", "remote.origin.url"], { cwd });
-        const hit = /(github\.com|gitlab\.com|codeberg\.org|bitbucket\.org)[:/]([A-Za-z0-9_.-]+)\//.exec(rem.stdout ?? "");
-        if (hit) {
-          const [, host, owner] = hit;
-          info.avatar = host === "github.com" ? owner : `${host}__${owner}`;
-          await exec("sh", [`${appHome()}/mods/spaces-pretty/fetch-avatar.sh`, host, owner]).catch(() => null);
-        }
-      }
+      info.top = top.stdout.trim();
+      info.dirty = C.countDirty(r.stdout);
+      if (!on) await this.identify(info, cwd);
       this.git[key] = info;
       if (!on) this.watch(repo, cx);
     } catch {
@@ -266,7 +278,15 @@ export default class Spaces extends View {
 
   menu(w) {
     // A popup is as tall as its items; height is only the most.
-    openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: w.id } } });
+    const row = this.rowsById[w.id];
+    const manual = shared("crest.folders") ?? {};
+    const key = row ? C.memberKey(row) : null;
+    const inFolder = row ? this.folderCtx().nameOf(row) : null;
+    openOverlay({ mod: "crest", kind: "popup", width: 230, height: 420, props: {
+      crestMenu: true, kind: "space", id: w.id, key, folder: inFolder ?? null, folders: Object.keys(manual),
+      pinned: Boolean(key && (shared("crest.pinned") ?? []).includes(key)), git: row?.g ? (row.g.linked ? "linked" : "main") : null,
+      hidden: (shared("crest.hidden") ?? []).length,
+    } });
   }
 
   orderingDue(now) {
@@ -282,7 +302,7 @@ export default class Spaces extends View {
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
-    const out = [];
+    let out = [];
     const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
     for (const r of list) {
       if (nested(r)) continue;
@@ -292,6 +312,8 @@ export default class Spaces extends View {
       const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
       kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
     }
+    // Keep each folder together so Cmd+1..9 follows what the sidebar shows.
+    out = C.arrange(out, this.folderCtx());
     // Simulate the batch so later indexes include earlier moves. An attempted
     // write can lose a sync conflict: allow the echo to settle before retrying.
     const order = sp.map(w => w.id);
@@ -317,7 +339,7 @@ export default class Spaces extends View {
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
     const rows = this.ordered();
-    const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
+    const draw = (r) => (collapsed ? this.compact(r, t) : this.block(r, t));
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
@@ -325,7 +347,7 @@ export default class Spaces extends View {
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
-    if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
+    if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : this.sectioned(rows, draw, t, collapsed);
     const machineNames = [null, ...remote];
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
@@ -360,14 +382,216 @@ export default class Spaces extends View {
         .on_click(() => run("space.new", { machine: m ?? "" }))
         .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("New space there"));
       if (!collapsed && rebuilt) return [head];
-      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];
+      return [head, ...(folded ? [] : mine.length ? this.sectioned(mine, draw, t, collapsed) : [loading(m) ? loadingRow(m) : empty])];
     });
   }
 
   // Only what's unusual, after the name: "herdr \u00b7 spike \u21912 \u21931". The repo or
   // branch goes when the name already says it (a worktree is named after its branch),
   // and master/main go: nearly every space is on one.
-  gitTail(g, tree, name, t) {
+  // A space row and, under it, what is running there: agents that need a look or are busy, and programs.
+  block(r, t) {
+    const lines = this.subLines(r.w, t);
+    if (!lines.length) return this.row(r, t);
+    return v_flex().flex_none().child(this.row(r, t)).children(lines);
+  }
+
+  subLines(w, t) {
+    const mode = this.cfg.agents;
+    if (mode === "none") return [];
+    const tabs = new Set((w.tabs ?? []).map((x) => x.id));
+    const now = Date.now();
+    const list = agents().filter((a) => a.space === w.id && (mode === "all" || a.status !== "idle"));
+    const progs = this.cfg.programs ? panes().filter((p) => tabs.has(p.tab) && p.terminal && !p.program?.shell && !p.program?.agent && p.program?.key !== "program") : [];
+    const items = [
+      ...list.map((a) => ({ id: `crest-a-${a.address}`, program: a.program, text: C.agentTitle(a), status: a.status, age: C.ago(now - this.age(a, now)), go: () => run("pane.focus", { pane: a.pane }) })),
+      ...progs.map((p) => ({ id: `crest-p-${p.pane}`, program: p.program, text: p.program?.name ?? "program", status: null, age: "", go: () => run("pane.focus", { pane: p.pane }) })),
+    ];
+    return items.map((it, i) => U.subLine({ t, ...it, last: i === items.length - 1, onClick: (_e, cx) => { run("space.select", { id: w.id }); it.go(); cx.notify(); } }));
+  }
+
+  age(a, now) {
+    const s = this.since[a.address];
+    if (!s || s.status !== a.status) this.since[a.address] = { status: a.status, at: now };
+    return this.since[a.address].at;
+  }
+
+  // Who owns the repo and what it looks like: owner picture, project icon. Local only.
+  async identify(info, cwd) {
+    const rem = await exec("git", ["config", "--get", "remote.origin.url"], { cwd }).catch(() => null);
+    const hit = C.parseRemote(rem?.stdout);
+    if (hit) {
+      info.owner = hit.owner;
+      info.host = hit.host;
+      const key = C.avatarKey(hit.host, hit.owner);
+      info.avatar = `${CACHE}/${key}.png`;
+      await exec("sh", [`${appHome()}/mods/crest/fetch-avatar.sh`, hit.host, hit.owner]).catch(() => null);
+      await this.label(hit.host, hit.owner);
+    }
+    if (this.cfg.icon === "auto" || this.cfg.icon === "project") info.project = await this.projectIcon(info.top);
+    const custom = this.cfg.icons[info.name] ?? null;
+    if (custom) info.custom = await this.copyIcon(custom, `c_${C.hashColor(custom).slice(1)}_${custom.length}`);
+  }
+
+  // A folder's automatic name: the owner's display name on GitHub (public API, once per owner).
+  async label(host, owner) {
+    const labels = shared("crest.labels") ?? {};
+    if (host !== "github.com" || owner in labels || this.asked?.has(owner)) return;
+    (this.asked ??= new Set()).add(owner);
+    const r = await exec("curl", ["-fsSL", "-m", "8", "-H", "Accept: application/vnd.github+json", `https://api.github.com/users/${owner}`]).catch(() => null);
+    if (!r || r.code !== 0) return;
+    let api = null;
+    try { api = JSON.parse(r.stdout); } catch { return; }
+    setShared("crest.labels", { ...(shared("crest.labels") ?? {}), [owner]: C.labelFrom(api, owner) });
+  }
+
+  async projectIcon(top) {
+    if (!top) return null;
+    if (top in this.icons) return this.icons[top] || null;
+    const ls = await exec("git", ["-C", top, "ls-files", "--", "*favicon.svg", "*favicon.png", "*apple-touch-icon.png", "*icon.svg", "*icon.png", "*logo.svg", "*logo.png", ".crest.*"]).catch(() => null);
+    const pick = C.pickIcon((ls?.stdout ?? "").split("\n").filter(Boolean));
+    this.icons[top] = pick ? (await this.copyIcon(`${top}/${pick}`, `p_${C.hashColor(top).slice(1)}_${top.length}`)) ?? "" : "";
+    return this.icons[top] || null;
+  }
+
+  // image() reads only under the Herdr home, so pictures are copied into the cache.
+  async copyIcon(path, stem) {
+    const ext = (path.match(/\.(png|svg|jpe?g)$/i)?.[1] ?? "png").toLowerCase();
+    const rel = `${CACHE}/${stem}.${ext}`;
+    const r = await exec("cp", ["-f", path, `${appHome()}/${rel}`]).catch(() => null);
+    return r && r.code === 0 ? rel : null;
+  }
+
+  // Pull request chips: one `gh` call per branch, at most every few minutes.
+  async refreshPrs(cx) {
+    if (!this.cfg.pr) return;
+    const now = Date.now();
+    for (const [key, g] of Object.entries(this.git)) {
+      const [on, cwd] = JSON.parse(key);
+      if (!g || on || g.host !== "github.com" || C.isTrunk(g.branch)) continue;
+      const seen = this.prs[key];
+      if (seen && seen.branch === g.branch && now - seen.at < PR_TTL) continue;
+      this.prs[key] = { branch: g.branch, at: now, pr: seen?.branch === g.branch ? seen.pr : null };
+      const r = await exec("gh", ["pr", "view", "--json", "number,state,isDraft,url"], { cwd }).catch(() => null);
+      this.prs[key].pr = r && r.code === 0 ? C.parsePr(r.stdout) : null;
+      cx.notify();
+    }
+  }
+
+  iconFor(g) {
+    if (!g) return null;
+    return C.chooseIcon(this.cfg.icon, { custom: g.custom ?? null, project: g.project ?? null, owner: g.avatar ?? null });
+  }
+
+  endDrags(cx) {
+    if (this.pressed === null && this.folderDrag === null && this.dropOver === null) return;
+    this.pressed = null; this.over = null; this.dropOver = null;
+    this.folderDrag = null; this.folderMoved = false; this.folderOver = null;
+    cx.notify();
+  }
+
+  // Put a space (and its worktrees) into a folder, or out of every folder with null.
+  joinFolder(row, to) {
+    const next = C.moveToFolder({ manual: shared("crest.folders") ?? {}, loose: shared("crest.loose") ?? [] }, C.memberKey(row), to);
+    setShared("crest.folders", next.manual);
+    setShared("crest.loose", next.loose);
+  }
+
+  folderCtx() {
+    const manual = shared("crest.folders") ?? {};
+    const hidden = shared("crest.hidden") ?? [];
+    const loose = shared("crest.loose") ?? [];
+    return { manual, pinned: shared("crest.pinned") ?? [], order: shared("crest.order") ?? [], nameOf: (r) => C.folderFor(r, { manual, cfg: this.cfg, hidden, loose }) };
+  }
+
+  // Rows under folder headers. Pinned and loose spaces come first, without a header.
+  sectioned(rows, draw, t, collapsed) {
+    for (const r of rows) this.rowsById[r.w.id] = r;
+    const ctx = this.folderCtx();
+    const secs = C.sections(rows, ctx);
+    if (collapsed || !C.needsHeaders(secs)) return secs.flatMap((sec) => sec.rows.map(draw));
+    const folded = shared("crest.folded") ?? [];
+    const names = secs.filter((sec) => sec.name !== null).map((sec) => sec.name);
+    const overrides = { ...(shared("crest.colors") ?? {}) };
+    for (const [n, f] of Object.entries(ctx.manual)) if (f.color) overrides[n] = f.color;
+    const colors = C.folderColors(names, overrides);
+    const dragging = this.pressed !== null;
+    return secs.flatMap((sec) => {
+      if (sec.name === null) return sec.rows.map(draw);
+      const shut = folded.includes(sec.name);
+      const pics = C.stackOf(sec.tops, (r) => this.iconFor(r.g), 3);
+      const more = Math.max(0, sec.tops.length - pics.length);
+      const status = this.cfg.dot ? C.topStatus(C.summarize(sec.rows)) : null;
+      const color = colors[sec.name];
+      const label = sec.kind === "manual" ? sec.name : C.folderLabel(sec.name, { renamed: shared("crest.names") ?? {}, labels: shared("crest.labels") ?? {} });
+      const movingFolder = this.folderDrag !== null && this.folderDrag !== undefined && this.folderMoved;
+      const head = U.folderHeader({
+        t, key: sec.name, label, color, count: sec.tops.length, shut, status, icons: pics, more,
+        hot: dragging && this.dropOver === sec.name,
+        landing: movingFolder && this.folderOver === sec.name && this.folderDrag !== sec.name,
+        onClick: (e, cx) => {
+          if (dragging || this.skipClick) { this.skipClick = false; return; }
+          setShared("crest.folded", C.toggleFold(folded, sec.name, names, Boolean(e?.modifiers?.alt)));
+          cx.notify();
+        },
+        onMenu: () => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 380, props: { crestMenu: true, kind: "folder", name: sec.name, label, color, manual: sec.kind === "manual", names, members: sec.tops.map((r) => C.memberKey(r)) } }),
+        onDown: () => { this.folderDrag = sec.name; this.folderMoved = false; this.folderOver = sec.name; this.skipClick = false; },
+        onMove: (_e, cx) => {
+          if (dragging && this.dropOver !== sec.name) { this.dropOver = sec.name; cx.notify(); }
+          if (this.folderDrag != null && (this.folderOver !== sec.name || this.dropOver !== sec.name)) {
+            if (this.folderOver !== sec.name) this.folderMoved = true;
+            this.folderOver = sec.name;
+            this.dropOver = sec.name;
+            cx.notify();
+          }
+        },
+        onUp: (_e, cx) => {
+          if (dragging) {
+            const row = this.rowsById[this.pressed];
+            this.pressed = null; this.over = null; this.dropOver = null;
+            if (row) this.joinFolder(row, sec.name);
+          } else if (this.folderDrag != null && this.folderMoved && this.folderDrag !== sec.name) {
+            setShared("crest.order", C.moveFolder(names, this.folderDrag, sec.name));
+            this.skipClick = true;
+          }
+          this.folderDrag = null; this.folderMoved = false; this.folderOver = null;
+          cx.notify();
+        },
+      });
+      const body = shut ? [] : sec.rows.length ? sec.rows.map(draw) : [U.emptyHint(t, sec.name)];
+      return [head, ...body];
+    }).concat(this.endZone(t, secs, names, dragging));
+  }
+
+  // Below the last folder: folders dropped here go last; spaces dropped here join the last folder, at its end.
+  endZone(t, secs, names, dragging) {
+    const last = secs[secs.length - 1];
+    const movingFolder = this.folderDrag != null && this.folderMoved;
+    return U.endZone({
+      t,
+      landing: (movingFolder || dragging) && this.dropOver === "\u0000end",
+      onMove: (_e, cx) => {
+        if ((this.folderDrag != null || dragging) && this.dropOver !== "\u0000end") {
+          this.dropOver = "\u0000end";
+          if (this.folderDrag != null) this.folderMoved = true;
+          cx.notify();
+        }
+      },
+      onUp: (_e, cx) => {
+        if (this.folderDrag != null && this.folderMoved) setShared("crest.order", C.moveFolder(names, this.folderDrag, null));
+        else if (dragging) {
+          const row = this.rowsById[this.pressed];
+          if (row && last) {
+            this.joinFolder(row, last.name);
+            run("space.move", { id: row.w.id, index: spaces().length });
+          }
+        }
+        this.endDrags(cx);
+      },
+    });
+  }
+
+  gitTail(g, tree, name, t, key) {
     const raw = g.branch ?? "detached";
     const same = (a) => a.toLowerCase() === name.toLowerCase();
     const branch = same(raw) || raw === "master" || raw === "main" ? "" : raw;
@@ -383,27 +607,20 @@ export default class Spaces extends View {
       .text_color(t.dim)
       .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)))
       .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
-  }
-
-  // Round avatar with a colored ring; a status dot on its corner when an agent works, waits or finishes.
-  avatar(w, g, fill, t) {
-    const { size, radius, dot } = this.cfg;
-    const live = dot && ["blocked", "done"].includes(w.status);
-    const face = g?.avatar
-      ? h_flex().size(size).flex_none().rounded(radius).overflow_hidden().child(image(`avatars/${g.avatar}.png`).size(size).rounded(radius))
-      : h_flex().size(size).flex_none().rounded(radius).bg(fill).items_center().justify_center().text_size(Math.round(size / 2)).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?");
-    return div().relative().size(size).flex_none().rounded(radius).items_center().justify_center()
-      .child(face)
-      .when(live, (el) => el.child(div().absolute().right(-2).bottom(-2).size(8).rounded(4).bg(tone(t, w.status)).border(1.5).border_color(t.chrome ?? t.background)));
+      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)))
+      .when(this.cfg.dirty && g.dirty > 0, (el) => el.child(U.dirtyMark(t, g.dirty)))
+      .when(Boolean(key && this.prs[key]?.pr), (el) => {
+        const pr = this.prs[key].pr;
+        return el.child(U.prChip(t, pr, (_e, cx) => { cx.stop_propagation?.(); if (pr.url) exec("open", [pr.url]).catch(() => null); }));
+      });
   }
 
   row({ w, i, g, tree }, t) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
-    const color = colors[w.id] ?? "ansi6";
-    const fill = colors[w.id] ? (color.startsWith("#") ? color : (MARK[color] ?? t[color])) : pretty(g?.repo ?? w.folder ?? w.id);
+    const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
+    const key = where(w, panes());
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
@@ -438,6 +655,12 @@ export default class Spaces extends View {
         this.pressed = null;
         this.over = null;
         if (from !== null && over === w.id && from !== w.id) {
+          const src = this.rowsById[from], dst = this.rowsById[w.id];
+          if (src && dst) {
+            const nameOf = this.folderCtx().nameOf;
+            const to = nameOf(dst);
+            if (to !== nameOf(src)) this.joinFolder(src, to);
+          }
           const index = spaces().findIndex(s => s.id === w.id);
           if (index !== -1) run("space.move", { id: from, index: index + 1 });
         } else if (from === w.id) run("space.select", { id: w.id });
@@ -449,27 +672,34 @@ export default class Spaces extends View {
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)))
-          .when(!tree, el => el.child(this.avatar(w, g, fill, t)))
+          .when(!tree, el => el.child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && (["blocked", "done"].includes(w.status) || (w.status === "working" && this.cfg.agents === "none")) ? w.status : null })))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
+          .child(g ? this.gitTail(g, tree, w.name, t, key) : div().flex_1()),
       );
   }
 
-  compact({ w, i }, t) {
+  // The narrow sidebar: just the tiles, with their status dot.
+  compact({ w, g, tree }, t) {
+    const colors = shared("space.colors") ?? {};
+    const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
     return h_flex()
       .id(`space-${w.id}`)
-      .h(26)
+      .h(tree ? 28 : 34)
       .flex_none()
       .justify_center()
-      .gap(4)
-      .when(w.active, (el) => el.bg(t.raised))
+      .items_center()
+      .rounded(8)
+      .when(w.active, (el) => el.bg(t.selected))
       .hover((s) => s.bg(t.hover))
       .on_click(() => run("space.select", { id: w.id }))
-      .child(div().text_color(w.active ? t.foreground : t.muted).child(String(i + 1)))
-      .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));
+      .on_mouse_down("right", () => this.menu(w))
+      .child(tree
+        ? svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)
+        : U.tile({ t, size: 22, radius: Math.min(this.cfg.radius, 11), icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && ["blocked", "done", "working"].includes(w.status) ? w.status : null }));
   }
 
   render() {
+    if (this.popup) return this.popup.render();
     const t = theme();
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
@@ -490,7 +720,9 @@ export default class Spaces extends View {
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode("always")
-        .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
+        .on_mouse_up("left", (_e, cx) => this.endDrags(cx))
+        // A button let go outside the list never reaches it: leaving the list ends any drag.
+        .on_hover((inside, cx) => { if (!inside) this.endDrags(cx); })
         .children(this.grouped(t, collapsed)));
   }
 }
