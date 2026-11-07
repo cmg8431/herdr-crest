@@ -183,7 +183,7 @@ test("countDirty counts changed and untracked entries only", () => {
 });
 
 test("parsePr maps states", () => {
-  assert.deepEqual(parsePr('{"number":7,"state":"OPEN","isDraft":false,"url":"u"}'), { number: 7, state: "open", url: "u" });
+  assert.deepEqual(parsePr('{"number":7,"state":"OPEN","isDraft":false,"url":"https://g/p/7"}'), { number: 7, state: "open", url: "https://g/p/7" });
   assert.equal(parsePr({ number: 7, state: "OPEN", isDraft: true }).state, "draft");
   assert.equal(parsePr({ number: 7, state: "MERGED" }).state, "merged");
   assert.equal(parsePr("no pull requests found"), null);
@@ -284,4 +284,10 @@ test("hashKey gives distinct cache names for paths of the same length", async ()
   assert.notEqual(a, b);
   assert.equal(a, hashKey("/code/worktrees/web/fix-a"));
   assert.match(a, /^[0-9a-f]{8}$/);
+});
+
+test("parsePr only keeps https links, since the chip opens them", () => {
+  assert.equal(parsePr({ number: 7, state: "OPEN", url: "https://github.com/o/r/pull/7" }).url, "https://github.com/o/r/pull/7");
+  assert.equal(parsePr({ number: 7, state: "OPEN", url: "file:///Applications/Calculator.app" }).url, null);
+  assert.equal(parsePr({ number: 7, state: "OPEN" }).url, null);
 });

@@ -4,6 +4,7 @@
 
 - PR numbers, owner pictures and owner folders for remotes that use an ssh host alias (`git@github-work:owner/repo`), resolved with `ssh -G`. Thanks @olddognewflex (#1).
 - `gh pr view` runs through `direnv exec` when direnv is installed, so a repo's `.envrc` can pick the gh account (#1). A branch with no PR is asked once, not twice.
+- A PR link opens only if it is `https://`. CI runs with read-only permissions.
 
 ## 0.3.1 - 2026-11-06
 

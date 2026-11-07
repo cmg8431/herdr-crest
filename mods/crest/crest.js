@@ -362,7 +362,8 @@ export function parsePr(json) {
     const p = typeof json === "string" ? JSON.parse(json) : json;
     if (!p || !Number.isInteger(p.number)) return null;
     const state = p.state === "MERGED" ? "merged" : p.state === "CLOSED" ? "closed" : p.isDraft ? "draft" : "open";
-    return { number: p.number, state, url: typeof p.url === "string" ? p.url : null };
+    // Only a web page: the chip hands this to `open`, which would also launch a file:// app.
+    return { number: p.number, state, url: typeof p.url === "string" && /^https:\/\//.test(p.url) ? p.url : null };
   } catch {
     return null;
   }

@@ -4,6 +4,7 @@
 
 A Spaces sidebar for [Herdr](https://herdr.dev). Each space shows its project's icon, and spaces sit in folders.
 
+[![release](https://img.shields.io/github/v/release/cmg8431/herdr-crest?color=5b8def)](https://github.com/cmg8431/herdr-crest/releases/latest)
 [![ci](https://github.com/cmg8431/herdr-crest/actions/workflows/ci.yml/badge.svg)](https://github.com/cmg8431/herdr-crest/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![herdr mod](https://img.shields.io/badge/herdr-mod-5b8def.svg)](https://herdr.dev/mods)
