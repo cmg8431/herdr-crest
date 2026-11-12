@@ -4,7 +4,9 @@
  * @typedef {"auto" | "project" | "owner" | "letter"} IconMode
  * @typedef {{
  *   size: number, radius: number, dot: boolean, group: "none" | "owner",
- *   icon: IconMode, pr: boolean, dirty: boolean, agents: "active" | "all" | "none", programs: boolean,
+ *   icon: IconMode, pr: boolean, checks: boolean, fetch: boolean, dirty: boolean, agents: "active" | "all" | "none", programs: boolean,
+ *   behind: boolean | "branch", branch: "tail" | "tooltip", header: "pill" | "plain",
+ *   collapse: "manual" | "idle", summary: boolean, fill: "art" | "letter",
  *   folders: Record<string, string[]>, icons: Record<string, string>
  * }} Config
  * @typedef {{ color?: string, members: string[] }} Folder
@@ -16,7 +18,9 @@
 /** @type {Readonly<Config>} */
 export const DEFAULTS = Object.freeze({
   size: 24, radius: 8, dot: true, group: "owner",
-  icon: "auto", pr: true, dirty: true, agents: "active", programs: false, folders: {}, icons: {},
+  icon: "auto", pr: true, checks: true, fetch: true, dirty: true, agents: "active", programs: false,
+  behind: true, branch: "tail", header: "pill", collapse: "manual", summary: true, fill: "art",
+  folders: {}, icons: {},
 });
 
 export const PALETTE = Object.freeze([
@@ -44,6 +48,21 @@ export function hashKey(str) {
     h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * A space with no picture of its own gets one of these small scenes (mods/crest/art/<name>.svg, drawn by
+ * tools/art.py): flowers, plants, fruit, sky, in soft colors. Picked by the space's key, so it stays put.
+ */
+export const ART = Object.freeze([
+  "tulip", "monstera", "lemon", "moon", "hills", "mountain", "daisy", "cherry", "mushroom",
+  "cactus", "waves", "olive", "pear", "sunflower", "cloud", "ginkgo", "stars", "shell",
+]);
+
+/** The picture a space shows: by its key, moved `shift` places on (the menu's "Another picture"). */
+export function artFor(key, shift = 0) {
+  const at = (parseInt(hashKey(`art:${key}`), 16) + shift) % ART.length;
+  return ART[(at + ART.length) % ART.length];
 }
 
 /** `git@github.com:o/r.git`, `https://gitlab.com/o/r` ... -> { host, owner, repo } */
@@ -135,8 +154,13 @@ export function normalizeConfig(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
   if (Number.isFinite(raw.size) && raw.size >= 14 && raw.size <= 48) out.size = raw.size;
   if (Number.isFinite(raw.radius) && raw.radius >= 0) out.radius = Math.min(raw.radius, out.size / 2);
-  for (const k of ["dot", "pr", "dirty", "programs"]) if (typeof raw[k] === "boolean") out[k] = raw[k];
+  for (const k of ["dot", "pr", "checks", "fetch", "dirty", "programs", "summary"]) if (typeof raw[k] === "boolean") out[k] = raw[k];
   if (["active", "all", "none"].includes(raw.agents)) out.agents = raw.agents;
+  if (typeof raw.behind === "boolean" || raw.behind === "branch") out.behind = raw.behind;
+  if (raw.branch === "tail" || raw.branch === "tooltip") out.branch = raw.branch;
+  if (raw.header === "pill" || raw.header === "plain") out.header = raw.header;
+  if (raw.collapse === "manual" || raw.collapse === "idle") out.collapse = raw.collapse;
+  if (raw.fill === "art" || raw.fill === "letter") out.fill = raw.fill;
   if (raw.group === "owner" || raw.group === "none") out.group = raw.group;
   if (["auto", "project", "owner", "letter"].includes(raw.icon)) out.icon = raw.icon;
   if (raw.folders && typeof raw.folders === "object") {
@@ -230,6 +254,73 @@ export function nest(list) {
     if (!r.g || r.g.linked || placed.has(r.g.repo)) continue;
     placed.add(r.g.repo);
     out.push(...kids(r.g.repo));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- collapsing a space
+
+/** Nothing going on in these rows: no agent working, waiting or just done, and none of them shown. */
+export function quiet(rows) {
+  return rows.every((r) => !r.w.active && !["working", "blocked", "done"].includes(r.w.status));
+}
+
+/**
+ * Whether a space (by memberKey) is collapsed. With `collapse: "manual"` only the ones you shut;
+ * with `"idle"` also every quiet one, unless you opened it.
+ */
+export function isShut(key, { shut = [], open = [], mode = "manual", idle = false }) {
+  if (shut.includes(key)) return true;
+  return mode === "idle" && idle && !open.includes(key);
+}
+
+/**
+ * With `collapse: "idle"`, opening a quiet space by hand lasts until it gets busy: once something
+ * runs there, it goes back to collapsing on its own when quiet again. Returns the `open` list to keep.
+ * @param {string[]} open
+ * @param {Row[][]} blocks
+ */
+export function settleOpen(open, blocks) {
+  const busy = new Set(blocks.filter((b) => !quiet(b)).map((b) => memberKey(b[0])));
+  return open.filter((k) => !busy.has(k));
+}
+
+/** Collapse or expand one space. Returns the new { shut, open } to store. */
+export function toggleShut({ shut = [], open = [] }, key, nowShut) {
+  const s = shut.filter((k) => k !== key);
+  const o = open.filter((k) => k !== key);
+  return nowShut ? { shut: s, open: [...o, key] } : { shut: [...s, key], open: o };
+}
+
+/** Collapse (or expand) several spaces at once, e.g. a whole folder's. Returns the new { shut, open }. */
+export function shutMany({ shut = [], open = [] }, keys, nowShut) {
+  const ks = new Set(keys);
+  const s = shut.filter((k) => !ks.has(k));
+  const o = open.filter((k) => !ks.has(k));
+  return nowShut ? { shut: [...s, ...ks], open: o } : { shut: s, open: [...o, ...ks] };
+}
+
+/**
+ * Rows to draw, with the worktrees of collapsed spaces left out. Every top-level row gets
+ * `kids` (worktrees under it); a collapsed one also gets `shut: true`, `hidden` (how many it holds),
+ * `hiddenStatus` (the most urgent status in it, its own included, since its lines hide too) and
+ * `holdsActive` (the shown space is one of its worktrees).
+ * @param {Row[]} rows from `nest`, in order
+ * @param {(top: Row, block: Row[]) => boolean} shutOf
+ */
+export function collapseRows(rows, shutOf) {
+  const out = [];
+  for (const block of toBlocks(rows)) {
+    const [top, ...kids] = block;
+    if (!shutOf(top, block)) {
+      out.push({ ...top, kids: kids.length }, ...kids);
+      continue;
+    }
+    out.push({
+      ...top, kids: kids.length, shut: true, hidden: kids.length,
+      hiddenStatus: topStatus(summarize(block)),
+      holdsActive: kids.some((k) => k.w.active),
+    });
   }
   return out;
 }
@@ -356,22 +447,114 @@ export function countDirty(porcelain) {
   return n;
 }
 
-/** `gh pr view --json number,state,isDraft,url` -> what the chip shows. */
+/** What `gh pr view` asks for. */
+export const PR_FIELDS = "number,state,isDraft,url,statusCheckRollup,reviewDecision";
+
+const CHECK_FAIL = new Set(["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+
+/** A PR's `statusCheckRollup` (check runs and commit statuses) -> "fail" | "pending" | "pass" | null (no checks). */
+export function rollup(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  let pending = false;
+  for (const c of list) {
+    const word = c?.conclusion || c?.state || "";
+    if (CHECK_FAIL.has(word)) return "fail";
+    if ((c?.status && c.status !== "COMPLETED") || word === "PENDING" || word === "EXPECTED") pending = true;
+  }
+  return pending ? "pending" : "pass";
+}
+
+/** `reviewDecision` -> "approved" | "changes" | "required" | null. */
+export function review(decision) {
+  return decision === "APPROVED" ? "approved" : decision === "CHANGES_REQUESTED" ? "changes" : decision === "REVIEW_REQUIRED" ? "required" : null;
+}
+
+/** `gh pr view --json <PR_FIELDS>` -> what the chip shows. */
 export function parsePr(json) {
   try {
     const p = typeof json === "string" ? JSON.parse(json) : json;
     if (!p || !Number.isInteger(p.number)) return null;
     const state = p.state === "MERGED" ? "merged" : p.state === "CLOSED" ? "closed" : p.isDraft ? "draft" : "open";
+    const live = state === "open" || state === "draft";
     // Only a web page: the chip hands this to `open`, which would also launch a file:// app.
-    return { number: p.number, state, url: typeof p.url === "string" && /^https:\/\//.test(p.url) ? p.url : null };
+    return {
+      number: p.number, state, url: typeof p.url === "string" && /^https:\/\//.test(p.url) ? p.url : null,
+      checks: live ? rollup(p.statusCheckRollup) : null,
+      review: live ? review(p.reviewDecision) : null,
+    };
   } catch {
     return null;
   }
 }
 
+/**
+ * The one mark a PR chip carries, if any: what most needs a look.
+ * Passing checks and a pending review say nothing; the number's color already says open.
+ */
+export function prMark(pr) {
+  if (!pr) return null;
+  if (pr.checks === "fail") return "fail";
+  if (pr.review === "changes") return "changes";
+  if (pr.checks === "pending") return "pending";
+  if (pr.review === "approved") return "approved";
+  return null;
+}
+
+/** The chip's tooltip: `PR #12, open · checks failing · changes requested`. */
+export function prTip(pr) {
+  const bits = [`PR #${pr.number}, ${pr.state}`];
+  if (pr.checks) bits.push({ fail: "checks failing", pending: "checks running", pass: "checks passed" }[pr.checks]);
+  if (pr.review) bits.push({ approved: "approved", changes: "changes requested", required: "review required" }[pr.review]);
+  return bits.join(" · ");
+}
+
+/** How long a PR answer is good for: shorter while its checks are running. */
+export function prTtl(pr) {
+  return pr?.checks === "pending" ? 90 * 1000 : 5 * 60 * 1000;
+}
+
 /** Branches that never get a PR chip. */
 export function isTrunk(branch) {
   return !branch || ["main", "master", "trunk", "develop", "dev", "(detached)"].includes(branch);
+}
+
+/**
+ * How `↓n` shows, or null to leave it out. A trunk checkout behind its remote is the normal
+ * state of things (someone merged), so it is dim; a working branch behind is worth seeing.
+ */
+export function behindTone(cfgBehind, branch, n) {
+  if (!(n > 0) || cfgBehind === false) return null;
+  if (isTrunk(branch)) return cfgBehind === "branch" ? null : "dim";
+  return "alert";
+}
+
+/**
+ * What a row's tail says about where it is: repo and branch, only where the name doesn't say it.
+ * `tail` goes after the name; `tip` is the full text for a tooltip (null when nothing is unusual).
+ * With `branch: "tooltip"` the branch moves out of the tail into the tooltip.
+ */
+export function placeText({ name, repo, branch, tree, mode = "tail" }) {
+  const raw = branch ?? "detached";
+  const same = (a) => String(a ?? "").toLowerCase() === String(name ?? "").toLowerCase();
+  const b = same(raw) || raw === "master" || raw === "main" ? "" : raw;
+  const r = tree || same(repo) ? "" : repo;
+  const full = [r, b].filter(Boolean).join(" · ");
+  const tail = mode === "tooltip" ? r : full;
+  return { tail, tip: full || null };
+}
+
+/**
+ * Attention across agents, for the summary at the top: how many wait for you and how many
+ * finished, and which one a click on each goes to next (after `last`, wrapping).
+ */
+export function attention(list, last = {}) {
+  const pick = (status) => {
+    const of = list.filter((a) => a.status === status);
+    if (!of.length) return { count: 0, next: null };
+    const at = of.findIndex((a) => a.address === last[status]);
+    return { count: of.length, next: of[(at + 1) % of.length] };
+  };
+  return { blocked: pick("blocked"), done: pick("done") };
 }
 
 // ---------------------------------------------------------------- lines under a space
@@ -392,6 +575,27 @@ export function ago(ms) {
 export function agentTitle(a) {
   const raw = String(a?.title ?? "").replace(/^[\s⠀-⣿✳✱✻✢·*•✳✶✻✽·⠂⠐]+/u, "").trim();
   return raw || a?.tab_name || a?.program?.name || a?.address || "agent";
+}
+
+/** A status word from `terminals()` as a line shows it: an agent's status, else null (a plain program). */
+export function lineStatus(status) {
+  return ["working", "blocked", "done", "idle"].includes(status) ? status : null;
+}
+
+/**
+ * Terminals an agent started (`hc run`, so `parent` is the agent) that have no pane of their own,
+ * by parent address. Kept ones (with a pane) already show as their own lines; ended ones go.
+ * With `agents: "active"`, idle ones go too, like idle agents.
+ */
+export function subAgents(terms, panes, mode = "active") {
+  const shown = new Set((panes ?? []).map((p) => p.terminal).filter(Boolean));
+  const out = {};
+  for (const x of terms ?? []) {
+    if (!x?.parent || shown.has(x.address) || (x.state && x.state !== "live")) continue;
+    if (mode !== "all" && x.status === "idle") continue;
+    (out[x.parent] ??= []).push(x);
+  }
+  return out;
 }
 
 /** A running program: its name, and the title when it says more (`vite` · "localhost:5173"). */
