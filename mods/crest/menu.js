@@ -3,20 +3,26 @@
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { run, props, closeOverlay, openOverlay, theme, shared, setShared, exec, appHome, knownAgents, pickFolder } from "herdr";
-import { PALETTE, assign, renameFolder, hashColor, stepFolder, removeFolder, moveToFolder } from "./crest.js";
+import { PALETTE, DEFAULTS, assign, renameFolder, hashColor, stepFolder, removeFolder, moveToFolder, toggleShut, shutMany } from "./crest.js";
 
-const ICON = (name) => (name === "chevron-up" ? "mods/crest/icons/chevron-up.svg" : `mods/workspace-chrome/${name}.svg`);
+const OWN = new Set(["chevron-up", "shuffle"]); // icons crest brings; the rest are Herdr's
+const ICON = (name) => (OWN.has(name) ? `mods/crest/icons/${name}.svg` : `mods/workspace-chrome/${name}.svg`);
 
 const folders = () => shared("crest.folders") ?? {};
 
 // crest.json in the default text editor; made from the defaults the first time.
 async function openSettings() {
   const path = `${appHome()}/crest.json`;
-  const seed = JSON.stringify({ group: "owner", icon: "auto", size: 24, radius: 8, dot: true, pr: true, dirty: true, agents: "active", programs: false, folders: {}, icons: {} }, null, 2);
+  const seed = JSON.stringify(DEFAULTS, null, 2);
   await exec("sh", ["-c", '[ -f "$1" ] || printf "%s\\n" "$2" > "$1"; open -t "$1" 2>/dev/null || xdg-open "$1"', "sh", path, seed]).catch(() => null);
 }
 
 const DANGER = { danger: true };
+
+const shutState = () => ({ shut: shared("crest.shut") ?? [], open: shared("crest.open") ?? [] });
+const saveShut = (next) => { setShared("crest.shut", next.shut); setShared("crest.open", next.open); };
+// Collapse or expand one space: its worktrees and the lines under it.
+const foldItem = (p) => [p.shut ? "Expand" : "Collapse", p.shut ? "chevron-down" : "chevron-right", () => saveShut(toggleShut(shutState(), p.key, p.shut))];
 
 function spaceItems(p) {
   const list = [];
@@ -24,6 +30,12 @@ function spaceItems(p) {
     const pins = new Set(shared("crest.pinned") ?? []);
     p.pinned ? pins.delete(p.key) : pins.add(p.key);
     setShared("crest.pinned", [...pins]);
+  }]);
+  if (p.key && p.collapsible) list.push(foldItem(p));
+  // Not taken with the picture it got: the next one, as often as you like.
+  if (p.artKey) list.push(["Another picture", "shuffle", () => {
+    const all = shared("crest.art") ?? {};
+    setShared("crest.art", { ...all, [p.artKey]: (all[p.artKey] ?? 0) + 1 });
   }]);
   list.push(["Move to folder…", "folder", "mode:move"]);
   list.push(["—"]);
@@ -90,6 +102,9 @@ function folderItems(p) {
   list.push(othersOpen
     ? ["Fold the others", "layers", () => setShared("crest.folded", names.filter((n) => n !== p.name))]
     : ["Open all folders", "layers", () => setShared("crest.folded", [])]);
+  if (p.members?.length) list.push(p.allShut
+    ? ["Expand its spaces", "chevron-down", () => saveShut(shutMany(shutState(), p.members, false))]
+    : ["Collapse its spaces", "chevron-right", () => saveShut(shutMany(shutState(), p.members, true))]);
   list.push(["—"]);
   list.push(["Remove folder", "x", () => {
     const next = removeFolder({ manual: folders(), hidden: shared("crest.hidden") ?? [] }, p.name);
@@ -98,6 +113,15 @@ function folderItems(p) {
     setShared("crest.folded", (shared("crest.folded") ?? []).filter((n) => n !== p.name));
   }, null, DANGER]);
   return list;
+}
+
+// A stand-in repo row (its main checkout isn't open): collapse, open the repo, another worktree.
+function ghostItems(p) {
+  return [
+    foldItem(p),
+    ...(p.folder ? [[`Open ${p.name ?? "repo"}`, "folder", () => run("space.new", { folder: p.folder, machine: p.machine ?? "" })]] : []),
+    ["New worktree…", "git-branch", () => openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260, props: { space: p.first, folder: p.folder ?? undefined, action: "new" } })],
+  ];
 }
 
 // The left cell of a menu row: a theme icon, a program's icon, a space's picture, or its letter.
@@ -192,7 +216,7 @@ export class Menu {
   render() {
     const t = theme();
     const p = props() ?? {};
-    const list = this.mode === "move" ? moveItems(p) : p.kind === "folder" ? folderItems(p) : p.kind === "new" ? newItems(p, this.agents) : p.kind === "add" ? addItems(p) : spaceItems(p);
+    const list = this.mode === "move" ? moveItems(p) : p.kind === "folder" ? folderItems(p) : p.kind === "new" ? newItems(p, this.agents) : p.kind === "add" ? addItems(p) : p.kind === "ghost" ? ghostItems(p) : spaceItems(p);
     const real = list.filter((it) => !["—", "colors", "order"].includes(it[0]));
     const box = v_flex().id("crest-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
       .on_key_down((e, cx) => {

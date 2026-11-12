@@ -183,7 +183,7 @@ test("countDirty counts changed and untracked entries only", () => {
 });
 
 test("parsePr maps states", () => {
-  assert.deepEqual(parsePr('{"number":7,"state":"OPEN","isDraft":false,"url":"https://g/p/7"}'), { number: 7, state: "open", url: "https://g/p/7" });
+  assert.deepEqual(parsePr('{"number":7,"state":"OPEN","isDraft":false,"url":"https://g/p/7"}'), { number: 7, state: "open", url: "https://g/p/7", checks: null, review: null });
   assert.equal(parsePr({ number: 7, state: "OPEN", isDraft: true }).state, "draft");
   assert.equal(parsePr({ number: 7, state: "MERGED" }).state, "merged");
   assert.equal(parsePr("no pull requests found"), null);
@@ -290,4 +290,175 @@ test("parsePr only keeps https links, since the chip opens them", () => {
   assert.equal(parsePr({ number: 7, state: "OPEN", url: "https://github.com/o/r/pull/7" }).url, "https://github.com/o/r/pull/7");
   assert.equal(parsePr({ number: 7, state: "OPEN", url: "file:///Applications/Calculator.app" }).url, null);
   assert.equal(parsePr({ number: 7, state: "OPEN" }).url, null);
+});
+
+// ---------------------------------------------------------------- 0.4: collapsing, quieter tails, PR checks, summary
+
+test("normalizeConfig reads the 0.4 keys and drops bad values", async () => {
+  const { normalizeConfig, DEFAULTS } = await import("../mods/crest/crest.js");
+  assert.equal(DEFAULTS.behind, true);
+  assert.equal(DEFAULTS.branch, "tail");
+  assert.equal(DEFAULTS.header, "pill");
+  assert.equal(DEFAULTS.collapse, "manual");
+  const c = normalizeConfig({ behind: "branch", branch: "tooltip", header: "plain", collapse: "idle", checks: false, summary: false });
+  assert.deepEqual([c.behind, c.branch, c.header, c.collapse, c.checks, c.summary], ["branch", "tooltip", "plain", "idle", false, false]);
+  const bad = normalizeConfig({ behind: "yes", branch: "hide", header: "bar", collapse: "always", checks: 1 });
+  assert.deepEqual([bad.behind, bad.branch, bad.header, bad.collapse, bad.checks], [true, "tail", "pill", "manual", true]);
+  assert.equal(normalizeConfig({ behind: false }).behind, false);
+});
+
+test("collapseRows hides a collapsed space's worktrees and speaks for them", async () => {
+  const { collapseRows, nest, memberKey } = await import("../mods/crest/crest.js");
+  const rows = nest([wt("main", "app", false), wt("a", "app", true), wt("b", "app", true), wt("x", "other", false)]);
+  rows[2].w.status = "blocked";
+  rows[1].w.active = true;
+  const open = collapseRows(rows, () => false);
+  assert.deepEqual(open.map((r) => [r.w.id, r.kids ?? null, Boolean(r.shut)]), [["main", 2, false], ["a", null, false], ["b", null, false], ["x", 0, false]]);
+  const key = memberKey(rows[0]);
+  const shut = collapseRows(rows, (top) => memberKey(top) === key);
+  assert.deepEqual(shut.map((r) => r.w.id), ["main", "x"]);
+  assert.equal(shut[0].shut, true);
+  assert.equal(shut[0].hidden, 2);
+  assert.equal(shut[0].hiddenStatus, "blocked");
+  assert.equal(shut[0].holdsActive, true);
+  assert.equal(shut[1].shut, undefined, "another repo stays open");
+});
+
+test("collapseRows: a collapsed space's own agents count too, and a stand-in collapses like a repo", async () => {
+  const { collapseRows, nest } = await import("../mods/crest/crest.js");
+  const solo = [{ w: { id: "s", name: "s", status: "working", machine: null }, i: 0, g: null }];
+  assert.equal(collapseRows(solo, () => true)[0].hiddenStatus, "working");
+  const rows = nest([wt("a", "app", true), wt("b", "app", true)]);
+  const out = collapseRows(rows, (top) => Boolean(top.ghost));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].ghost, true);
+  assert.equal(out[0].hidden, 2);
+});
+
+test("isShut, toggleShut and shutMany: manual and idle", async () => {
+  const { isShut, toggleShut, shutMany, quiet } = await import("../mods/crest/crest.js");
+  assert.equal(isShut("k", { shut: ["k"] }), true);
+  assert.equal(isShut("k", { shut: [], idle: true }), false, "manual mode never collapses on its own");
+  assert.equal(isShut("k", { shut: [], mode: "idle", idle: true }), true);
+  assert.equal(isShut("k", { shut: [], open: ["k"], mode: "idle", idle: true }), false, "opened by hand stays open");
+  assert.equal(isShut("k", { shut: [], mode: "idle", idle: false }), false, "busy spaces stay open");
+
+  assert.deepEqual(toggleShut({ shut: [], open: ["k"] }, "k", false), { shut: ["k"], open: [] });
+  assert.deepEqual(toggleShut({ shut: ["k"], open: [] }, "k", true), { shut: [], open: ["k"] });
+  assert.deepEqual(shutMany({ shut: ["a"], open: ["b"] }, ["a", "b"], true), { shut: ["a", "b"], open: [] });
+  assert.deepEqual(shutMany({ shut: ["a", "c"], open: [] }, ["a", "b"], false), { shut: ["c"], open: ["a", "b"] });
+
+  assert.equal(quiet([{ w: { status: "idle" } }, { w: {} }]), true);
+  assert.equal(quiet([{ w: { status: "idle" } }, { w: { status: "done" } }]), false);
+  assert.equal(quiet([{ w: { active: true } }]), false, "the shown space never collapses on its own");
+});
+
+test("rollup and review read gh's PR fields", async () => {
+  const { rollup, review } = await import("../mods/crest/crest.js");
+  assert.equal(rollup([]), null);
+  assert.equal(rollup(undefined), null);
+  assert.equal(rollup([{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "SUCCESS" }]), "pass");
+  assert.equal(rollup([{ status: "COMPLETED", conclusion: "SKIPPED" }, { status: "COMPLETED", conclusion: "NEUTRAL" }]), "pass");
+  assert.equal(rollup([{ status: "IN_PROGRESS", conclusion: "" }, { status: "COMPLETED", conclusion: "SUCCESS" }]), "pending");
+  assert.equal(rollup([{ state: "PENDING" }]), "pending");
+  assert.equal(rollup([{ status: "IN_PROGRESS" }, { status: "COMPLETED", conclusion: "FAILURE" }]), "fail", "a failure wins over running checks");
+  assert.equal(rollup([{ state: "ERROR" }]), "fail");
+  assert.equal(rollup([{ status: "COMPLETED", conclusion: "CANCELLED" }]), "pass", "cancelled is not a failure, as in gh pr checks");
+  assert.equal(review("APPROVED"), "approved");
+  assert.equal(review("CHANGES_REQUESTED"), "changes");
+  assert.equal(review("REVIEW_REQUIRED"), "required");
+  assert.equal(review(""), null);
+});
+
+test("parsePr keeps checks and review for open PRs only; prMark picks one mark", async () => {
+  const { parsePr, prMark, prTip, prTtl } = await import("../mods/crest/crest.js");
+  const open = parsePr({ number: 3, state: "OPEN", statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }], reviewDecision: "APPROVED" });
+  assert.deepEqual([open.checks, open.review], ["fail", "approved"]);
+  const merged = parsePr({ number: 3, state: "MERGED", statusCheckRollup: [{ state: "FAILURE" }], reviewDecision: "APPROVED" });
+  assert.deepEqual([merged.checks, merged.review], [null, null]);
+
+  assert.equal(prMark({ checks: "fail", review: "changes" }), "fail");
+  assert.equal(prMark({ checks: "pending", review: "changes" }), "changes");
+  assert.equal(prMark({ checks: "pending", review: "approved" }), "pending");
+  assert.equal(prMark({ checks: "pass", review: "approved" }), "approved");
+  assert.equal(prMark({ checks: "pass", review: "required" }), null, "nothing wrong: no mark");
+  assert.equal(prMark(null), null);
+
+  assert.equal(prTip({ number: 3, state: "open", checks: "fail", review: "changes" }), "PR #3, open · checks failing · changes requested");
+  assert.equal(prTip({ number: 3, state: "merged", checks: null, review: null }), "PR #3, merged");
+  assert.ok(prTtl({ checks: "pending" }) < prTtl({ checks: "pass" }));
+  assert.equal(prTtl(null), prTtl({ checks: "pass" }));
+});
+
+test("behindTone: a trunk behind is dim, a branch behind is worth seeing", async () => {
+  const { behindTone } = await import("../mods/crest/crest.js");
+  assert.equal(behindTone(true, "main", 102), "dim");
+  assert.equal(behindTone(true, "feat/x", 3), "alert");
+  assert.equal(behindTone("branch", "main", 102), null);
+  assert.equal(behindTone("branch", "feat/x", 3), "alert");
+  assert.equal(behindTone(false, "feat/x", 3), null);
+  assert.equal(behindTone(true, "feat/x", 0), null);
+});
+
+test("placeText: only what the name doesn't say; tooltip mode moves the branch out of the tail", async () => {
+  const { placeText } = await import("../mods/crest/crest.js");
+  assert.deepEqual(placeText({ name: "web", repo: "web", branch: "main" }), { tail: "", tip: null });
+  assert.deepEqual(placeText({ name: "Manager UX", repo: "inpock-frontend", branch: "hotfix/manager", tree: "└─" }), { tail: "hotfix/manager", tip: "hotfix/manager" });
+  assert.deepEqual(placeText({ name: "notes", repo: "web", branch: "spike" }), { tail: "web · spike", tip: "web · spike" });
+  assert.deepEqual(placeText({ name: "notes", repo: "web", branch: "spike", mode: "tooltip" }), { tail: "web", tip: "web · spike" });
+  assert.deepEqual(placeText({ name: "fix-a", repo: "web", branch: "fix-a", tree: "├─" }), { tail: "", tip: null });
+  assert.deepEqual(placeText({ name: "web", repo: "web", branch: null }), { tail: "detached", tip: "detached" });
+});
+
+test("attention counts who waits and cycles through them", async () => {
+  const { attention } = await import("../mods/crest/crest.js");
+  const list = [{ address: "a", status: "blocked" }, { address: "b", status: "working" }, { address: "c", status: "blocked" }, { address: "d", status: "done" }];
+  const first = attention(list);
+  assert.equal(first.blocked.count, 2);
+  assert.equal(first.blocked.next.address, "a");
+  assert.equal(first.done.next.address, "d");
+  assert.equal(attention(list, { blocked: "a" }).blocked.next.address, "c");
+  assert.equal(attention(list, { blocked: "c" }).blocked.next.address, "a", "wraps around");
+  assert.equal(attention(list, { blocked: "gone" }).blocked.next.address, "a", "a closed agent starts over");
+  assert.deepEqual(attention([]).blocked, { count: 0, next: null });
+});
+
+test("settleOpen: a space opened by hand goes back to auto-collapsing once it gets busy", async () => {
+  const { settleOpen, toBlocks, memberKey } = await import("../mods/crest/crest.js");
+  const quietRow = { w: { id: "q", status: "idle", folder: "/q", machine: null }, g: null };
+  const busyRow = { w: { id: "b", status: "working", folder: "/b", machine: null }, g: null };
+  const blocks = toBlocks([quietRow, busyRow]);
+  assert.deepEqual(settleOpen([memberKey(quietRow), memberKey(busyRow), "gone"], blocks), [memberKey(quietRow), "gone"]);
+});
+
+test("subAgents: pane-less live children by parent; kept and ended ones stay out", async () => {
+  const { subAgents, lineStatus, normalizeConfig } = await import("../mods/crest/crest.js");
+  const terms = [
+    { address: "t1" },
+    { address: "t2", parent: "t1", state: "live", status: "working", name: "tests" },
+    { address: "t3", parent: "t1", state: "live", status: "idle" },
+    { address: "t4", parent: "t1", state: "live", status: "working" },
+    { address: "t5", parent: "t1", state: "exited", status: "done" },
+    { address: "t6", parent: "t9", state: "live" },
+  ];
+  const panes = [{ terminal: "t1" }, { terminal: "t4" }];
+  assert.deepEqual(Object.fromEntries(Object.entries(subAgents(terms, panes)).map(([k, v]) => [k, v.map((x) => x.address)])), { t1: ["t2"], t9: ["t6"] });
+  assert.deepEqual(subAgents(terms, panes, "all").t1.map((x) => x.address), ["t2", "t3"]);
+  assert.deepEqual(subAgents(undefined, undefined), {});
+  assert.equal(lineStatus("working"), "working");
+  assert.equal(lineStatus("unknown"), null);
+  assert.equal(normalizeConfig({ fetch: false }).fetch, false);
+  assert.equal(normalizeConfig({}).fetch, true);
+});
+
+test("artFor: a scene by key, stable, moved on by shift; every scene has its file", async () => {
+  const { artFor, ART, normalizeConfig } = await import("../mods/crest/crest.js");
+  const { existsSync } = await import("node:fs");
+  assert.equal(artFor("/u/notes"), artFor("/u/notes"));
+  assert.notEqual(artFor("/u/notes"), artFor("/u/notes", 1));
+  assert.equal(artFor("/u/notes", ART.length), artFor("/u/notes"), "a full turn comes back");
+  assert.equal(artFor("/u/notes", -1), artFor("/u/notes", ART.length - 1), "negative shifts wrap");
+  for (const name of ART) assert.ok(existsSync(new URL(`../mods/crest/art/${name}.svg`, import.meta.url)), name);
+  assert.equal(normalizeConfig({ fill: "letter" }).fill, "letter");
+  assert.equal(normalizeConfig({ fill: "emoji" }).fill, "art");
 });

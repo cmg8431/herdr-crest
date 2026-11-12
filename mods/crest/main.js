@@ -5,13 +5,16 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, agents, run, openOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile } from "herdr";
+import { spaces, machines, panes, agents, run, openOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile, nextCommand, notify, terminals } from "herdr";
 import * as C from "./crest.js";
 import * as U from "./ui.js";
 import { Menu } from "./menu.js";
 
 const CACHE = "crest-cache"; // under the Herdr home, where image() can read
-const PR_TTL = 5 * 60 * 1000;
+// git run from a click: never stop to ask for a password or a host key.
+const QUIET = ["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes"];
+// How often a repo in view is fetched, so ↓ says what is waiting upstream.
+const FETCH_EVERY = 10 * 60 * 1000;
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -32,6 +35,7 @@ function place(s, ps) {
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
+const LINE = 24; // a line under a space (ui.subLine)
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
@@ -57,14 +61,14 @@ export default class Spaces extends View {
   init(_props, cx) {
     // Opened as crest's own right-click menu: draw only that.
     if (props()?.crestMenu) { this.popup = new Menu(cx); return; }
-    // Optional ~/.config/herdr-app/crest.json (see README). Read once per layout load.
+    // Optional ~/.config/herdr-app/crest.json (see README), read now and again whenever it is saved.
     this.cfg = C.normalizeConfig(null);
-    (async () => {
-      const raw = (await readTextFile(`${appHome()}/crest.json`).catch(() => null)) ?? (await readTextFile(`${appHome()}/spaces-pretty.json`).catch(() => null));
-      try { this.cfg = C.normalizeConfig(JSON.parse(raw ?? "null")); } catch { /* keep defaults */ }
-      cx.notify();
-    })();
+    this.cfgRaw = undefined;
+    this.jumped = {}; // "blocked" | "done" -> the agent the summary at the top went to last
     this.prs = {}; // where() -> { pr, at }
+    this.pulling = new Set(); // checkouts (git top) being pulled from a ↓ click
+    this.fetched = {}; // repo -> when it was last fetched
+    this.tip = null; // { id, text }: what the control under the pointer does, said in its row
     this.icons = {}; // repo top -> project icon path under CACHE ("" when none)
     this.rowsById = {}; // space id -> its row, for drops on folder headers
     this.dropOver = null; // folder name under a dragged space
@@ -98,6 +102,65 @@ export default class Spaces extends View {
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
+    this.loadConfig(cx);
+    // crest.json applies as it is saved. The batch names the files that changed; a batch
+    // holding the folder itself means "anything may have", so look then too.
+    cx.spawn(async (cx) => {
+      const home = appHome().replace(/\/+$/, "");
+      try {
+        for (;;) {
+          const paths = await watchFolder(home);
+          if (paths.some((p) => p.replace(/\/+$/, "") === home || /\/(crest|spaces-pretty)\.json$/.test(p))) await this.loadConfig(cx);
+        }
+      } catch { /* can't watch: crest.json is read when the layout loads */ }
+    });
+    // Key commands (keys.json: "alt-[": "crest.collapse"): see `command`.
+    cx.spawn(async (cx) => {
+      try {
+        for (;;) {
+          const c = await nextCommand();
+          this.command(c);
+          cx.notify();
+        }
+      } catch { /* no key commands here */ }
+    });
+  }
+
+  // collapse: the shown space's repo, in or out. collapse-all / expand-all: every space in the list.
+  command(c) {
+    const blocks = C.toBlocks(this.lastRows ?? []);
+    const state = { shut: shared("crest.shut") ?? [], open: shared("crest.open") ?? [] };
+    const save = (next) => { setShared("crest.shut", next.shut); setShared("crest.open", next.open); };
+    if (c === "collapse") {
+      const block = blocks.find((b) => b.some((r) => r.w.active));
+      if (!block) return;
+      save(C.toggleShut(state, C.memberKey(block[0]), this.shutOf()(block[0], block)));
+    } else if (c === "collapse-all" || c === "expand-all") {
+      const keys = blocks.filter((b) => b.length > 1 || this.lineItems(b[0].w).length > 0).map((b) => C.memberKey(b[0]));
+      save(C.shutMany(state, keys, c === "collapse-all"));
+    }
+  }
+
+  async loadConfig(cx) {
+    const raw = (await readTextFile(`${appHome()}/crest.json`).catch(() => null)) ?? (await readTextFile(`${appHome()}/spaces-pretty.json`).catch(() => null));
+    if (raw === this.cfgRaw) return;
+    const first = this.cfgRaw === undefined;
+    this.cfgRaw = raw;
+    let next;
+    // Half-written JSON while someone types: keep what it shows until the file reads again.
+    try { next = C.normalizeConfig(JSON.parse(raw ?? "null")); } catch { return; }
+    const prev = this.cfg;
+    this.cfg = next;
+    // Pictures depend on the icon settings: look again at every repo shown.
+    if (!first && (prev.icon !== next.icon || JSON.stringify(prev.icons) !== JSON.stringify(next.icons))) {
+      this.idents = {};
+      this.icons = {};
+      this.refreshGit(Object.keys(this.git), cx);
+    } else if (!first && (prev.pr !== next.pr || prev.checks !== next.checks)) {
+      this.prs = {};
+      this.refreshGit([], cx);
+    }
+    cx.notify();
   }
 
   checkNew(cx) {
@@ -215,6 +278,7 @@ export default class Spaces extends View {
         for (const key of keys) await this.check(key, cx);
       }
       await this.refreshPrs(cx).catch(() => null);
+      await this.fetchDue().catch(() => null);
       const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
       for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
       this.refreshing = false;
@@ -283,11 +347,14 @@ export default class Spaces extends View {
     const manual = shared("crest.folders") ?? {};
     const key = row ? C.memberKey(row) : null;
     const inFolder = row ? this.folderCtx().nameOf(row) : null;
-    openOverlay({ mod: "crest", kind: "popup", width: 230, height: 420, props: {
+    openOverlay({ mod: "crest", kind: "popup", width: 230, height: 440, props: {
       crestMenu: true, kind: "space", id: w.id, key, folder: inFolder ?? null, folders: Object.keys(manual),
       pinned: Boolean(key && (shared("crest.pinned") ?? []).includes(key)), git: row?.g ? (row.g.linked ? "linked" : "main") : null,
       hidden: (shared("crest.hidden") ?? []).length,
       allFolders: this.lastFolders ?? [],
+      shut: Boolean(row?.shut), collapsible: Boolean(row && !row.tree && (row.kids > 0 || this.lineItems(w).length > 0)),
+      // Its scene (no picture of its own), so the menu can offer another.
+      artKey: row && !row.tree && !this.iconFor(row.g) && this.cfg.fill === "art" ? (row.g?.repo ?? w.folder ?? w.id) : null,
     } });
   }
 
@@ -333,6 +400,12 @@ export default class Spaces extends View {
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
     const rows = this.ordered();
+    this.lastRows = rows; // for key commands
+    if (this.cfg.collapse === "idle") {
+      const open = shared("crest.open") ?? [];
+      const keep = open.length ? C.settleOpen(open, C.toBlocks(rows)) : open;
+      if (keep.length !== open.length) setShared("crest.open", keep);
+    }
     const draw = (r) => (collapsed ? this.compact(r, t) : this.block(r, t));
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
@@ -384,26 +457,93 @@ export default class Spaces extends View {
   // branch goes when the name already says it (a worktree is named after its branch),
   // and master/main go: nearly every space is on one.
   // A space row and, under it, what is running there: agents that need a look or are busy, and programs.
+  // A collapsed space hides its lines (and, in `collapseRows`, its worktrees).
   block(r, t) {
     if (r.ghost) return this.ghostRow(r, t);
-    const lines = this.subLines(r.w, t);
-    if (!lines.length) return this.row(r, t);
-    return v_flex().flex_none().child(this.row(r, t)).children(lines);
+    // Worked out even when collapsed: it keeps each agent's "since" fresh and says whether there is anything to collapse.
+    const items = this.lineItems(r.w);
+    const row = this.row(r, t, items.length);
+    if (!items.length) return row;
+    // Collapsed, the lines slide away under the row instead of vanishing.
+    return v_flex().flex_none().child(row).child(U.slideBox(`crest-lines-${r.w.id}`, !r.shut, items.length * LINE, this.subLines(r, items, t)));
   }
 
-  subLines(w, t) {
+  // Each space with its worktrees in a box that slides when the space collapses or expands.
+  blocksDrawn(list, shutOf, t) {
+    return C.toBlocks(list).map((block) => {
+      const [top] = this.visible(block, shutOf);
+      const kids = block.slice(1);
+      if (!kids.length) return this.block(top, t);
+      return v_flex().flex_none()
+        .child(this.block(top, t))
+        .child(U.slideBox(`crest-kids-${top.w.id}`, !top.shut, this.kidsHeight(kids), kids.map((k) => this.block(k, t))));
+    });
+  }
+
+  // How tall rows draw: a row, plus its lines unless collapsed, plus its worktrees unless collapsed.
+  kidsHeight(kids) {
+    return kids.reduce((n, k) => n + rowHeight(k) + this.lineItems(k.w).length * LINE, 0);
+  }
+
+  heightOf(list, shutOf) {
+    let h = 0;
+    for (const block of C.toBlocks(list)) {
+      const [top] = C.collapseRows(block, shutOf);
+      h += rowHeight(top);
+      if (top.shut) continue;
+      if (!top.ghost) h += this.lineItems(top.w).length * LINE;
+      h += this.kidsHeight(block.slice(1));
+    }
+    return h;
+  }
+
+  // What runs in a space, one entry per line: agents (by `agents` in crest.json), then programs.
+  lineItems(w) {
     const mode = this.cfg.agents;
     if (mode === "none") return [];
     const tabs = new Set((w.tabs ?? []).map((x) => x.id));
     const now = Date.now();
     const list = agents().filter((a) => a.space === w.id && (mode === "all" || a.status !== "idle"));
-    const progs = this.cfg.programs ? panes().filter((p) => tabs.has(p.tab) && p.terminal && !p.program?.shell && !p.program?.agent && p.program?.key !== "program") : [];
-    const items = [
-      ...list.map((a) => ({ id: `crest-a-${a.address}`, program: a.program, text: C.agentTitle(a), status: a.status, age: C.ago(now - this.age(a, now)), pane: a.pane, go: () => run("pane.focus", { pane: a.pane }) })),
+    const ps = panes();
+    const progs = this.cfg.programs ? ps.filter((p) => tabs.has(p.tab) && p.terminal && !p.program?.shell && !p.program?.agent && p.program?.key !== "program") : [];
+    // What an agent started with `hc run` and has no pane of its own: under it, one step in. Click peeks.
+    const kids = list.length ? C.subAgents(terminals(), ps, mode) : {};
+    return [
+      ...list.flatMap((a) => {
+        const mine = kids[a.address] ?? [];
+        return [
+          { id: `crest-a-${a.address}`, program: a.program, text: C.agentTitle(a), status: a.status, age: C.ago(now - this.age(a, now)), pane: a.pane, kids: mine.length, go: () => run("pane.focus", { pane: a.pane }) },
+          ...mine.map((k, n) => ({
+            id: `crest-s-${k.address}`, sub: true, lastSub: n === mine.length - 1, program: k.program, text: k.name || C.agentTitle(k),
+            status: C.lineStatus(k.status), age: C.ago(now - this.age(k, now)), go: () => run("terminal.peek", { terminal: k.address }),
+          })),
+        ];
+      }),
       ...progs.map((p) => ({ id: `crest-p-${p.pane}`, program: p.program, text: p.program?.name ?? "program", status: null, age: "", pane: p.pane, go: () => run("pane.focus", { pane: p.pane }) })),
     ];
-    return items.map((it, i) => U.subLine({
-      t, ...it, last: i === items.length - 1,
+  }
+
+  subLines(r, items, t) {
+    const w = r.w;
+    const base = r.tree ? U.RAIL.worktree : U.RAIL.space;
+    const tops = items.filter((it) => !it.sub);
+    const lastTop = tops[tops.length - 1];
+    let parentLast = false;
+    return items.map((it) => {
+      if (!it.sub) parentLast = it === lastTop;
+      return this.subLine(w, it, t, {
+        indent: it.sub ? base + U.RAIL.step : base,
+        last: it.sub ? it.lastSub : it === lastTop,
+        // A sub-agent under an agent that isn't the last: the agent's rail runs on beside it.
+        pass: it.sub && !parentLast ? base : null,
+        stub: !it.sub && it.kids > 0,
+      });
+    });
+  }
+
+  subLine(w, it, t, place) {
+    return U.subLine({
+      t, ...it, ...place,
       hovered: this.hover === `line:${it.id}`,
       onHover: (on, cx) => this.setHover(`line:${it.id}`, on, cx),
       armed: this.armed?.id === it.id && Date.now() - this.armed.at < 3000,
@@ -414,7 +554,7 @@ export default class Spaces extends View {
         cx.notify();
       } : null,
       onClick: (_e, cx) => { run("space.select", { id: w.id }); it.go(); cx.notify(); },
-    }));
+    });
   }
 
   age(a, now) {
@@ -494,12 +634,14 @@ export default class Spaces extends View {
       const [on, cwd] = JSON.parse(key);
       if (!g || on || g.host !== "github.com" || C.isTrunk(g.branch)) continue;
       const seen = this.prs[key];
-      if (seen && seen.branch === g.branch && now - seen.at < PR_TTL) continue;
+      // Checks still running: ask sooner, so the mark turns when they finish.
+      if (seen && seen.branch === g.branch && now - seen.at < C.prTtl(seen.pr)) continue;
       this.prs[key] = { branch: g.branch, at: now, pr: seen?.branch === g.branch ? seen.pr : null };
       // Through direnv when present, so the repo's .envrc picks the gh account
       // (GH_CONFIG_DIR); exec has no env option. Plain gh if that fails.
       if (this.direnv === undefined) this.direnv = (await exec("/bin/sh", ["-c", "command -v direnv"]).catch(() => null))?.code === 0;
-      const view = ["pr", "view", "--json", "number,state,isDraft,url"];
+      // Checks and review come in the same call: no extra request per branch.
+      const view = ["pr", "view", "--json", this.cfg.checks ? C.PR_FIELDS : "number,state,isDraft,url"];
       let r = this.direnv ? await exec("direnv", ["exec", cwd, "gh", ...view], { cwd }).catch(() => null) : null;
       // gh's own "no PR for this branch" is an answer: asking again would only double the API calls.
       if (!r || (r.code !== 0 && !C.noPr(r.stderr))) r = await exec("gh", view, { cwd }).catch(() => null);
@@ -508,14 +650,60 @@ export default class Spaces extends View {
     }
   }
 
+  // A tile with no picture of its own shows one of crest's scenes (fill: "art"), picked by `key`;
+  // "Another picture" in the menu moves it on (shared crest.art: key -> shift).
+  sceneFor(key) {
+    if (this.cfg.fill !== "art" || !key) return null;
+    return `mods/crest/art/${C.artFor(key, (shared("crest.art") ?? {})[key] ?? 0)}.svg`;
+  }
+
   iconFor(g) {
     if (!g) return null;
     return C.chooseIcon(this.cfg.icon, { custom: g.custom ?? null, project: g.project ?? null, owner: g.avatar ?? null });
   }
 
+  // What the control under the pointer does, said in its row's tail at once (no tooltip wait).
+  hint(id, text, cx) {
+    const next = text ? { id, text } : this.tip?.id === id ? null : this.tip;
+    if (next?.id === this.tip?.id && next?.text === this.tip?.text) return;
+    this.tip = next;
+    cx.notify();
+  }
+
+  hintFor(id) {
+    return this.tip?.id === id ? this.tip.text : null;
+  }
+
+  // As over9k does: fetch now and then, so ↓ says what is waiting upstream. Local repos in view with a
+  // known remote, while the window is in front, each at most every 10 minutes, and never while an agent
+  // there is working (its own git could trip on the fetch's lock). The watch then sees the new refs.
+  async fetchDue() {
+    if (!this.cfg.fetch || !window().active) return;
+    const now = Date.now();
+    const ps = panes();
+    const busy = new Set(spaces().filter((s) => s.status === "working").map((s) => this.git[where(s, ps)]?.repo).filter(Boolean));
+    const seen = new Set();
+    for (const g of Object.values(this.git)) {
+      if (!g || seen.has(g.repo)) continue;
+      seen.add(g.repo);
+      if (JSON.parse(g.repo)[0] || !g.host || busy.has(g.repo) || now - (this.fetched[g.repo] ?? 0) < FETCH_EVERY) continue;
+      this.fetched[g.repo] = now;
+      await exec("env", [...QUIET, "git", "fetch", "--quiet"], { cwd: g.top, timeout: 60000 }).catch(() => null);
+    }
+  }
+
   setHover(key, on, cx) {
     const next = on ? key : this.hover === key ? null : this.hover;
     if (next !== this.hover) { this.hover = next; cx.notify(); }
+  }
+
+  // From the summary at the top: the next agent waiting (or done), in turn.
+  jump(status, a, cx) {
+    if (!a) return;
+    this.jumped = { ...this.jumped, [status]: a.address };
+    run("space.select", { id: a.space });
+    run("pane.focus", { pane: a.pane });
+    cx.notify();
   }
 
   // A space made from a folder's "New space here": put it in that folder once its git is known.
@@ -536,7 +724,7 @@ export default class Spaces extends View {
     const cands = secs.filter((x) => x.name !== sec.name).flatMap((x) => x.tops).map((r) => {
       const colors = shared("space.colors") ?? {};
       const fill = String(colors[r.w.id] ?? "").startsWith("#") ? colors[r.w.id] : C.hashColor(r.g?.repo ?? r.w.folder ?? r.w.id);
-      return { key: C.memberKey(r), name: r.w.name, icon: this.iconFor(r.g), letter: C.initial(r.w.name), fill };
+      return { key: C.memberKey(r), name: r.w.name, icon: this.iconFor(r.g) ?? this.sceneFor(r.g?.repo ?? r.w.folder ?? r.w.id), letter: C.initial(r.w.name), fill };
     });
     openOverlay({ mod: "crest", kind: "popup", width: 260, height: 420, props: { crestMenu: true, kind: "add", name: sec.name, label, candidates: cands } });
   }
@@ -555,6 +743,26 @@ export default class Spaces extends View {
     setShared("crest.loose", next.loose);
   }
 
+  // Which spaces are collapsed: the ones you shut, and with `collapse: "idle"` every quiet one you didn't open.
+  shutOf() {
+    const shut = shared("crest.shut") ?? [], open = shared("crest.open") ?? [], mode = this.cfg.collapse;
+    return (top, block) => C.isShut(C.memberKey(top), { shut, open, mode, idle: mode === "idle" && C.quiet(block) });
+  }
+
+  // Rows as drawn: collapsed spaces without their worktrees. Kept in rowsById so menus see the same state.
+  visible(rows, shutOf) {
+    const out = C.collapseRows(rows, shutOf);
+    for (const r of out) this.rowsById[r.w.id] = r;
+    return out;
+  }
+
+  toggleSpace(r, cx) {
+    const next = C.toggleShut({ shut: shared("crest.shut") ?? [], open: shared("crest.open") ?? [] }, C.memberKey(r), Boolean(r.shut));
+    setShared("crest.shut", next.shut);
+    setShared("crest.open", next.open);
+    cx?.notify();
+  }
+
   folderCtx() {
     const manual = shared("crest.folders") ?? {};
     const hidden = shared("crest.hidden") ?? [];
@@ -568,7 +776,11 @@ export default class Spaces extends View {
     this.claimPending(rows);
     const ctx = this.folderCtx();
     const secs = C.sections(rows, ctx);
-    if (!C.needsHeaders(secs)) return secs.flatMap((sec) => sec.rows.map(draw));
+    // Collapsing only changes what is drawn: order, Cmd+1..9 and a folder's status dot still see every space.
+    const shutOf = this.shutOf();
+    // The narrow sidebar just leaves collapsed worktrees out; the wide one slides them.
+    const shown = (list) => (collapsed ? this.visible(list, shutOf).map(draw) : this.blocksDrawn(list, shutOf, t));
+    if (!C.needsHeaders(secs)) return secs.flatMap((sec) => shown(sec.rows));
     const folded = shared("crest.folded") ?? [];
     const names = secs.filter((sec) => sec.name !== null).map((sec) => sec.name);
     const overrides = { ...(shared("crest.colors") ?? {}) };
@@ -578,8 +790,11 @@ export default class Spaces extends View {
     this.lastFolders = secs.filter((x) => x.name !== null).map((x) => ({ key: x.name, label: labelOf(x), color: colors[x.name] }));
     const dragging = this.pressed !== null;
     return secs.flatMap((sec) => {
-      if (sec.name === null) return sec.rows.map(draw);
+      if (sec.name === null) return shown(sec.rows);
       const shut = folded.includes(sec.name);
+      const members = sec.tops.map((r) => C.memberKey(r));
+      const allShut = C.collapseRows(sec.rows, shutOf).filter((r) => !r.tree).every((r) => r.shut);
+      const folderMenu = (label, color) => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 410, props: { crestMenu: true, kind: "folder", name: sec.name, label, color, manual: sec.kind === "manual", names, members, allShut } });
       if (collapsed) {
         const compactColor = colors[sec.name];
         const compactLabel = sec.kind === "manual" ? sec.name : C.folderLabel(sec.name, { renamed: shared("crest.names") ?? {}, labels: shared("crest.labels") ?? {} });
@@ -587,11 +802,11 @@ export default class Spaces extends View {
         const head = U.compactFolder({
           t, key: sec.name, label: `${compactLabel} (${sec.tops.length})`, color: compactColor, shut, status: st,
           onClick: (_e, cx) => { setShared("crest.folded", C.toggleFold(folded, sec.name, names, false)); cx.notify(); },
-          onMenu: () => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 380, props: { crestMenu: true, kind: "folder", name: sec.name, label: compactLabel, color: compactColor, manual: sec.kind === "manual", names, members: sec.tops.map((r) => C.memberKey(r)) } }),
+          onMenu: () => folderMenu(compactLabel, compactColor),
         });
-        return [U.compactGroup(t, sec.name, head, shut ? [] : sec.rows.map(draw))];
+        return [U.compactGroup(t, sec.name, head, shut ? [] : shown(sec.rows))];
       }
-      const pics = C.stackOf(sec.tops, (r) => this.iconFor(r.g), 3);
+      const pics = C.stackOf(sec.tops, (r) => this.iconFor(r.g) ?? this.sceneFor(r.g?.repo ?? r.w.folder ?? r.w.id), 3);
       const more = Math.max(0, sec.tops.length - pics.length);
       const status = this.cfg.dot ? C.topStatus(C.summarize(sec.rows)) : null;
       const color = colors[sec.name];
@@ -600,18 +815,18 @@ export default class Spaces extends View {
       const head = U.folderHeader({
         t, key: sec.name, label, color, count: sec.tops.length, shut, status, icons: pics, more,
         hot: dragging && this.dropOver === sec.name,
+        plain: this.cfg.header === "plain",
         hovered: !dragging && this.folderDrag == null && this.hover === `folder:${sec.name}`,
         onHover: (on, cx) => this.setHover(`folder:${sec.name}`, on, cx),
         onAdd: () => this.quickAdd(sec, label, secs),
         landing: movingFolder && this.folderOver === sec.name && this.folderDrag !== sec.name,
         onClick: (e, cx) => {
           if (dragging || this.skipClick) { this.skipClick = false; return; }
+          // A click folds; renaming is in the folder's menu only.
           setShared("crest.folded", C.toggleFold(folded, sec.name, names, Boolean(e?.modifiers?.alt)));
-          // A double-click folds and unfolds (no change) and opens the name field.
-          if (e?.click_count === 2) openOverlay({ mod: "crest", kind: "popup", width: 240, height: 140, props: { crestMenu: true, kind: "folder", startRename: true, name: sec.name, label, color, manual: sec.kind === "manual", names } });
           cx.notify();
         },
-        onMenu: () => openOverlay({ mod: "crest", kind: "popup", width: 230, height: 380, props: { crestMenu: true, kind: "folder", name: sec.name, label, color, manual: sec.kind === "manual", names, members: sec.tops.map((r) => C.memberKey(r)) } }),
+        onMenu: () => folderMenu(label, color),
         onDown: () => { this.folderDrag = sec.name; this.folderMoved = false; this.folderOver = sec.name; this.skipClick = false; },
         onMove: (_e, cx) => {
           if (dragging && this.dropOver !== sec.name) { this.dropOver = sec.name; cx.notify(); }
@@ -635,8 +850,13 @@ export default class Spaces extends View {
           cx.notify();
         },
       });
-      const body = shut ? [] : sec.rows.length ? sec.rows.map(draw) : [U.emptyHint(t, sec.name)];
-      return [head, ...body];
+      // Drawn shut too, so folding slides; one step in, on a rail under the folder's glyph.
+      const body = U.folderBody({
+        t, key: sec.name, plain: this.cfg.header === "plain", open: !shut,
+        height: sec.rows.length ? this.heightOf(sec.rows, shutOf) : 10,
+        children: sec.rows.length ? shown(sec.rows) : [U.emptyHint(t, sec.name)],
+      });
+      return [head, body];
     }).concat(collapsed ? [] : [this.endZone(t, secs, names, dragging)]);
   }
 
@@ -668,32 +888,94 @@ export default class Spaces extends View {
     });
   }
 
-  gitTail(g, tree, name, t, key) {
-    const raw = g.branch ?? "detached";
-    const same = (a) => a.toLowerCase() === name.toLowerCase();
-    const branch = same(raw) || raw === "master" || raw === "main" ? "" : raw;
-    const repo = tree || same(g.name) ? "" : g.name;
-    const where = [repo, branch].filter(Boolean).join(" \u00b7 ");
+  // Only what's unusual, after the name: "herdr \u00b7 spike \u21912 \u21931 \u2022 #12". The repo or branch goes
+  // when the name already says it (a worktree is named after its branch), and master/main go.
+  // A trunk checkout behind its remote is normal, so its \u2193 is dim.
+  gitTail(g, place, t, key, id) {
+    const behind = C.behindTone(this.cfg.behind, g.branch, g.behind);
+    const pr = key ? this.prs[key]?.pr ?? null : null;
+    const hint = this.hintFor(id);
+    const onHint = (text, cx) => this.hint(id, text, cx);
+    const text = hint ?? place.tail;
     return h_flex()
       .flex_1()
       .min_w(0)
-      .gap(5)
+      .gap(4)
       .justify_end()
       .items_center()
       .text_size(11.5)
       .text_color(t.dim)
-      .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)))
+      .when(Boolean(text), (el) => el.child(div().id(`crest-where-${id}`).min_w(0).truncate().when(Boolean(hint), (d) => d.text_color(t.muted)).when(!hint && Boolean(place.tip), (d) => d.tooltip(place.tip)).child(text)))
       .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)))
-      .when(this.cfg.dirty && g.dirty > 0, (el) => el.child(U.dirtyMark(t, g.dirty)))
-      .when(Boolean(key && this.prs[key]?.pr), (el) => {
-        const pr = this.prs[key].pr;
-        return el.child(U.prChip(t, pr, (_e, cx) => { cx.stop_propagation?.(); if (pr.url) exec("open", [pr.url]).catch(() => null); }));
-      });
+      // ↓ pulls (fast-forward only: it never merges or loses work); while it runs, it says so.
+      .when(Boolean(behind), (el) => el.child(U.gitAction(h_flex().text_color(behind === "dim" ? t.dim : t.ansi1).child(this.pulling.has(g.top) ? "\u2193\u2026" : `\u2193${g.behind}`), {
+        t, id: `crest-pull-${id}`, tip: `Pull ${g.behind} new commit${g.behind === 1 ? "" : "s"}`, onHint, onClick: (_e, cx) => this.pull(g, cx),
+      })))
+      .when(this.cfg.dirty && g.dirty > 0, (el) => el.child(U.dirtyMark(t, { id: `crest-dirty-${id}`, n: g.dirty, onHint, onClick: (_e, cx) => this.showChanges(id, cx) })))
+      .when(Boolean(pr), (el) => el.child(U.prChip(t, {
+        id: `crest-pr-${id}`, pr, mark: this.cfg.checks ? C.prMark(pr) : null, tip: `Open ${C.prTip(pr)}`, onHint,
+        onClick: (_e, cx) => { cx.stop_propagation?.(); if (pr.url) exec("open", [pr.url]).catch(() => null); },
+      })));
   }
 
-  row({ w, i, g, tree }, t) {
-    const on = w.active;
+  // `git pull --ff-only` where the space is; says how it went, then looks at the repo again.
+  pull(g, cx) {
+    if (this.pulling.has(g.top)) return;
+    this.pulling.add(g.top);
+    cx.notify();
+    const on = JSON.parse(g.repo)[0] ?? null;
+    cx.spawn(async (cx) => {
+      const r = await exec("env", [...QUIET, "git", "pull", "--ff-only", "--quiet"], { cwd: g.top, on, timeout: 120000 }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e), stdout: "" }));
+      this.pulling.delete(g.top);
+      const why = (r.stderr || r.stdout).trim().split("\n").filter(Boolean).pop() ?? "";
+      notify(r.code === 0 ? { title: `Pulled ${g.name}`, level: "success", timeout: 3000 } : { title: `Couldn't pull ${g.name}`, body: why, level: "error" });
+      this.refreshGit(Object.keys(this.git).filter((k) => this.git[k]?.repo === g.repo), cx);
+      cx.notify();
+    });
+  }
+
+  // The space in front, with the Changes panel showing. The panel waits until the space is in front:
+  // switching spaces restores each one's own panels, which would hide one shown before.
+  showChanges(id, cx) {
+    const show = () => {
+      if (!find(layout(), "panel-body")) return;
+      run("layout.select", { stack: "panel-body", child: "changes" });
+      run("layout.show", { id: "panel" });
+    };
+    if (spaces().find((s) => s.id === id)?.active) return show();
+    run("space.select", { id });
+    let tries = 0;
+    const wait = (cx) => cx.timer.after(50, (cx) => (spaces().find((s) => s.id === id)?.active ? cx.timer.after(150, () => show()) : ++tries < 40 && wait(cx)));
+    wait(cx);
+  }
+
+  // The status a tile's dot shows. Collapsed, the space speaks for what it hides, working included,
+  // since its lines (where "working" otherwise shows) are hidden too.
+  tileStatus(r) {
+    if (!this.cfg.dot) return null;
+    if (r.shut) return r.hiddenStatus ?? null;
+    const s = r.w.status;
+    return ["blocked", "done"].includes(s) || (s === "working" && this.cfg.agents === "none") ? s : null;
+  }
+
+  // The collapse control in the row's right-end slot: shown while collapsed (with what it holds), on hover when open.
+  foldSlot(r, t, collapsible, hovered) {
+    return U.disclosure({
+      t, id: `crest-fold-${r.w.id}`, shut: Boolean(r.shut), hidden: r.hidden ?? 0,
+      show: collapsible && (Boolean(r.shut) || hovered), collapsible,
+      onHint: (text, cx) => this.hint(r.w.id, text, cx),
+      onClick: (_e, cx) => this.toggleSpace(r, cx),
+    });
+  }
+
+  row(r, t, lineCount = 0) {
+    const { w, i, g, tree } = r;
+    // A collapsed space stands in for the shown worktree inside it.
+    const on = w.active || Boolean(r.holdsActive);
+    const collapsible = !tree && (r.kids > 0 || lineCount > 0);
+    const hovered = this.hover === `row:${w.id}` && this.pressed === null;
+    const place = g ? C.placeText({ name: w.name, repo: g.name, branch: g.branch, tree, mode: this.cfg.branch }) : { tail: "", tip: null };
+    const nameTip = this.cfg.branch === "tooltip" && place.tip && place.tip !== place.tail ? place.tip : null;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
     const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
@@ -707,7 +989,7 @@ export default class Spaces extends View {
       .justify_center()
       .rounded(8)
       .when(on, (el) => el.bg(t.selected))
-      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(!on, (el) => el.child(U.washLayer(t, `crest-wash-${w.id}`, hovered)))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
       .when(this.pressed !== null && this.over === w.id && this.pressed !== w.id, (el) => el.child(
         div().absolute().left(0).right(0).h(2).bg(t.accent)
@@ -726,7 +1008,7 @@ export default class Spaces extends View {
           cx.notify();
         }
       })
-      .on_mouse_up("left", (_e, cx) => {
+      .on_mouse_up("left", (e, cx) => {
         const from = this.pressed;
         const over = this.over;
         this.pressed = null;
@@ -740,22 +1022,31 @@ export default class Spaces extends View {
           }
           const index = spaces().findIndex(s => s.id === w.id);
           if (index !== -1) run("space.move", { id: from, index: index + 1 });
-        } else if (from === w.id) run("space.select", { id: w.id });
+        } else if (from === w.id) {
+          run("space.select", { id: w.id });
+          // A double-click collapses or expands, as in a file tree; the first click already selected it.
+          if (e?.click_count === 2 && collapsible) this.toggleSpace(r, cx);
+        }
         cx.notify();
       })
       .on_mouse_down("right", () => this.menu(w))
-      .on_hover((on, cx) => this.setHover(`row:${w.id}`, on, cx))
+      .on_hover((on, cx) => { if (!on && this.tip?.id === w.id) this.tip = null; this.setHover(`row:${w.id}`, on, cx); })
       .child(
         h_flex()
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(fill)))
-          .when(!tree, el => el.child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && (["blocked", "done"].includes(w.status) || (w.status === "working" && this.cfg.agents === "none")) ? w.status : null })))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t, key) : div().flex_1())
-          .when(this.hover === `row:${w.id}` && this.pressed === null, (el) => el.child(h_flex().flex_none().gap(2)
-            .child(U.iconButton({ t, id: `crest-new-${w.id}`, icon: "plus", tip: "New terminal or agent here", onClick: () => this.quickNew(w) }))
-            .child(U.iconButton({ t, id: `crest-close-${w.id}`, icon: "x", tip: "Close space", onClick: () => run("space.close", { id: w.id }) })))),
+          .when(!tree, el => el.child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g) ?? this.sceneFor(g?.repo ?? w.folder ?? w.id), letter: C.initial(w.name), fill, status: this.tileStatus(r) })))
+          .child(div().id(`crest-name-${w.id}`).flex_shrink(0).max_w(150).truncate().text_color(t.foreground).when(Boolean(nameTip), (d) => d.tooltip(nameTip)).child(w.name))
+          .child(g ? this.gitTail(g, place, t, key, w.id) : h_flex().flex_1().min_w(0).justify_end().text_size(11.5).text_color(t.muted)
+            .when(Boolean(this.hintFor(w.id)), (el) => el.child(div().min_w(0).truncate().child(this.hintFor(w.id)))))
+          // Slides open on hover, so the tail glides aside instead of jumping.
+          .child(U.revealBox(`crest-btns-${w.id}`, hovered, 46, [
+            U.iconButton({ t, id: `crest-new-${w.id}`, icon: "plus", tip: "New terminal or agent", onHint: (text, cx) => this.hint(w.id, text, cx), onClick: () => this.quickNew(w) }),
+            U.iconButton({ t, id: `crest-close-${w.id}`, icon: "x", tip: "Close this space", onHint: (text, cx) => this.hint(w.id, text, cx), onClick: () => run("space.close", { id: w.id }) }),
+          ]))
+          // Every row keeps the slot, so chevrons, tails and buttons stay in their columns.
+          .child(this.foldSlot(r, t, collapsible, hovered)),
       );
   }
 
@@ -773,14 +1064,29 @@ export default class Spaces extends View {
     const { w, g } = r;
     const fill = C.hashColor(g.repo);
     const hovered = this.hover === `row:${w.id}` && this.pressed === null;
-    return h_flex().id(`space-${w.id}`).px(8).h(rowHeight({})).flex_none().gap(9).items_center().rounded(8)
-      .hover((s) => s.bg(t.hover))
-      .when(Boolean(w.folder), (el) => el.tooltip(`Open ${w.name}`).on_click(() => this.openMain(r)))
+    // Not a space but a group: a click folds it, like a folder. Opening the repo is a button and in its menu.
+    return h_flex().id(`space-${w.id}`).relative().px(8).h(rowHeight({})).flex_none().gap(9).items_center().rounded(8).cursor_pointer()
+      .when(Boolean(r.holdsActive), (el) => el.bg(t.selected))
+      .when(!r.holdsActive, (el) => el.child(U.washLayer(t, `crest-wash-${w.id}`, hovered)))
+      .on_click((_e, cx) => this.toggleSpace(r, cx))
       .on_mouse_up("left", (_e, cx) => this.endDrags(cx))
-      .on_hover((on, cx) => this.setHover(`row:${w.id}`, on, cx))
-      .child(div().opacity(0.6).child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g), letter: C.initial(w.name), fill })))
+      .on_mouse_down("right", () => this.ghostMenu(r))
+      .on_hover((on, cx) => { if (!on && this.tip?.id === w.id) this.tip = null; this.setHover(`row:${w.id}`, on, cx); })
+      .child(U.tile({ t, size: this.cfg.size, radius: this.cfg.radius, icon: this.iconFor(g) ?? this.sceneFor(g.repo), letter: C.initial(w.name), fill, status: this.tileStatus(r), faded: true }))
       .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(w.name))
-      .when(hovered, (el) => el.child(U.iconButton({ t, id: `crest-wt-${w.id}`, icon: "plus", tip: "New worktree", onClick: () => this.newWorktree(r) })));
+      .when(Boolean(this.hintFor(w.id)), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.muted).child(this.hintFor(w.id))))
+      .child(U.revealBox(`crest-btns-${w.id}`, hovered, w.folder ? 46 : 22, [
+        ...(w.folder ? [U.iconButton({ t, id: `crest-open-${w.id}`, icon: "folder", tip: `Open ${w.name}`, onHint: (text, cx) => this.hint(w.id, text, cx), onClick: () => this.openMain(r) })] : []),
+        U.iconButton({ t, id: `crest-wt-${w.id}`, icon: "plus", tip: "New worktree", onHint: (text, cx) => this.hint(w.id, text, cx), onClick: () => this.newWorktree(r) }),
+      ]))
+      .child(this.foldSlot(r, t, true, hovered));
+  }
+
+  // A stand-in has no space behind it, so its menu is short: collapse, open the repo, another worktree.
+  ghostMenu(r) {
+    openOverlay({ mod: "crest", kind: "popup", width: 230, height: 160, props: {
+      crestMenu: true, kind: "ghost", key: C.memberKey(r), shut: Boolean(r.shut), first: r.first, folder: r.w.folder ?? null, name: r.w.name, machine: r.w.machine ?? null,
+    } });
   }
 
   // The narrow sidebar: just the tiles, with their status dot.
@@ -789,15 +1095,19 @@ export default class Spaces extends View {
     if (r.ghost) {
       return h_flex().id(`space-${w.id}`).h(36).w_full().flex_none().justify_center().items_center()
         .tooltip(w.name)
-        .when(Boolean(w.folder), (el) => el.on_click(() => this.openMain(r)))
-        .child(h_flex().size(32).flex_none().rounded(9).items_center().justify_center().opacity(0.6).hover((s) => s.bg(t.hover))
-          .child(U.tile({ t, size: 24, radius: Math.min(this.cfg.radius, 12), icon: this.iconFor(g), letter: C.initial(w.name), fill: C.hashColor(g.repo) })));
+        .on_click((_e, cx) => this.toggleSpace(r, cx))
+        .on_mouse_down("right", () => this.ghostMenu(r))
+        .child(h_flex().size(32).flex_none().rounded(9).items_center().justify_center().hover((s) => s.bg(t.hover))
+          .when(Boolean(r.holdsActive), (el) => el.bg(t.selected))
+          .child(U.tile({ t, size: 24, radius: Math.min(this.cfg.radius, 12), icon: this.iconFor(g) ?? this.sceneFor(g.repo), letter: C.initial(w.name), fill: C.hashColor(g.repo), status: this.tileStatus(r), faded: true })));
     }
     const colors = shared("space.colors") ?? {};
     const fill = String(colors[w.id] ?? "").startsWith("#") ? colors[w.id] : C.hashColor(g?.repo ?? w.folder ?? w.id);
+    // The narrow sidebar has no lines under a space, so its dot shows working too.
+    const status = r.shut ? this.tileStatus(r) : this.cfg.dot && ["blocked", "done", "working"].includes(w.status) ? w.status : null;
     const face = tree
       ? svg("mods/workspace-chrome/branch.svg").size(11).text_color(fill).opacity(0.85)
-      : U.tile({ t, size: 24, radius: Math.min(this.cfg.radius, 12), icon: this.iconFor(g), letter: C.initial(w.name), fill, status: this.cfg.dot && ["blocked", "done", "working"].includes(w.status) ? w.status : null });
+      : U.tile({ t, size: 24, radius: Math.min(this.cfg.radius, 12), icon: this.iconFor(g) ?? this.sceneFor(g?.repo ?? w.folder ?? w.id), letter: C.initial(w.name), fill, status });
     // Only the tile is highlighted, so the column reads as icons, not as stretched rows.
     return h_flex()
       .id(`space-${w.id}`)
@@ -810,7 +1120,7 @@ export default class Spaces extends View {
       .on_click(() => run("space.select", { id: w.id }))
       .on_mouse_down("right", () => this.menu(w))
       .child(h_flex().size(tree ? 22 : 32).flex_none().rounded(tree ? 6 : 9).items_center().justify_center()
-        .when(w.active, (el) => el.bg(t.selected))
+        .when(w.active || Boolean(r.holdsActive), (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .child(face));
   }
@@ -831,9 +1141,14 @@ export default class Spaces extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
+    // Who needs you, at a glance: shown only when someone does.
+    const att = this.cfg.summary && !collapsed ? C.attention(agents(), this.jumped) : null;
+    const pill = (status, a, tip) => U.attentionPill({ t, id: `crest-attn-${status}`, status, count: a.count, tip, onClick: (_e, cx) => this.jump(status, a.next, cx) });
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
-        .when(!collapsed, el => el.child(div().flex_1().child("Spaces")))
+        .when(!collapsed, el => el.child(h_flex().flex_1().min_w(0).gap(6).items_center().child("Spaces")
+          .when(Boolean(att?.blocked.count), (h) => h.child(pill("blocked", att.blocked, `${att.blocked.count} waiting for you. Click for the next.`)))
+          .when(Boolean(att?.done.count), (h) => h.child(pill("done", att.done, `${att.done.count} finished. Click for the next.`)))))
         .when(!collapsed, el => el.child(div().id("crest-folder-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).tooltip("New folder")
           .hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => openOverlay({ mod: "crest", kind: "popup", width: 240, height: 140, props: { crestMenu: true, kind: "newfolder" } }))

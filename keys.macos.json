@@ -1,0 +1,7 @@
+{
+  "global": {
+    "cmd-.": "crest.collapse",
+    "cmd-shift-.": "crest.collapse-all",
+    "cmd-alt-.": "crest.expand-all"
+  }
+}

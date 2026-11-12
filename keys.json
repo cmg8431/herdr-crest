@@ -1,0 +1,7 @@
+{
+  "global": {
+    "ctrl-alt-.": "crest.collapse",
+    "ctrl-alt-shift-.": "crest.collapse-all",
+    "ctrl-alt-,": "crest.expand-all"
+  }
+}
