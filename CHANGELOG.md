@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.0 - 2026-11-12
+
+Collapse, calmer rows, and a sidebar that moves.
+
+**Collapse**
+- Collapse a space: its worktrees and the lines under it fold into one row that keeps the most urgent status and the worktree count. Use the chevron at the right end of the row, double-click the row, the space or folder menu, or the key commands `crest.collapse`, `crest.collapse-all`, `crest.expand-all` (`keys.json` and `keys.macos.json` suggest keys). `collapse: "idle"` collapses quiet spaces by itself.
+- A stand-in repo row folds on click, like a folder. Opening the repo moved to its hover button and menu.
+- A folder's spaces sit one step in, on a rail under its glyph.
+
+**Calmer, easier to hit**
+- Chevrons of rows and folder headers sit in one column; agents' ages line up with the git tails; lines under a worktree hang from its branch mark.
+- Row buttons are bigger and easier to see, with a hover that shows on a hovered row. The row says what a click does while the pointer is on one.
+- `↓` on a trunk branch is dim (`behind`). Idle agents show no mark.
+- `header: "plain"` for quiet folder headers, `branch: "tooltip"` to keep the branch out of the tail.
+- A space with no picture shows one of 18 little pictures (flowers, fruit, sky) instead of a letter (`fill`); **Another picture** in its menu picks a different one.
+
+**Motion**
+- Hover washes fade, row buttons slide open, chevrons turn, folds and collapses spring. Buttons dim while pressed. All native, no timers.
+
+**Git and agents**
+- The PR number carries one mark for checks failing, changes requested, checks running or approved (`checks`). Running checks are looked at again after 90 seconds.
+- Click `↓` to pull (fast-forward only); click the uncommitted dot to open the Changes panel.
+- Repos in view are fetched every 10 minutes while the window is in front, so `↓` is current (`fetch`).
+- Waiting and finished agents are counted next to "Spaces"; click for the next one (`summary`).
+- An agent's sub-agents (started with `hc run`, no pane of their own) show under it; click peeks.
+
+**Other**
+- crest.json applies on save.
+- Double-clicking a folder no longer opens rename; it is in the folder's menu.
+- PR chips of two repos with the same number no longer share an element id.
+
 ## 0.3.2 - 2026-11-07
 
 - PR numbers, owner pictures and owner folders for remotes that use an ssh host alias (`git@github-work:owner/repo`), resolved with `ssh -G`. Thanks @olddognewflex (#1).
